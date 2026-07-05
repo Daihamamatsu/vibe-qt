@@ -1,0 +1,19 @@
+{
+  "name": "stock-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "vue": "^3.2.47",
+    "axios": "^1.4.0",
+    "chart.js": "^4.3.0",
+    "vue-chartjs": "^5.2.1"
+  },
+  "devDependencies": {
+    "vite": "^4.4.9",
+    "@vitejs/plugin-vue": "^4.2.0"
+  }
+}
