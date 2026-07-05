@@ -13,13 +13,16 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.staticfiles',
     'rest_framework',
+    'corsheaders',
     'stockapp.app',
 ]
 
 MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
 ]
 
+CORS_ALLOW_ALL_ORIGINS = True
 ROOT_URLCONF = 'stockapp.urls'
 
 TEMPLATES = []
