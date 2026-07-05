@@ -1,0 +1,20 @@
+# Node.js
+node_modules/
+package-lock.json
+npm-debug.log
+
+# Vue.js
+/dist/
+public/.vite-dev-server
+
+# IDEs and editors
+.vscode/
+.idea/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
