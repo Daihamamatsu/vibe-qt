@@ -1,0 +1,41 @@
+# postman/MyApp API Tests.postman_collection.json
+{
+  "info": {
+    "name": "MyApp API Tests",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Get Users",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE_URL}}/api/v1/users/",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "v1", "users"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Create User",
+      "request": {
+        "method": "POST",
+        "header": [
+          {"key": "Content-Type", "value": "application/json"}
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"test@example.com\",\n  \"password\": \"secret\"\n}"
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/api/v1/users/",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "v1", "users"]
+        }
+      },
+      "response": []
+    }
+  ]
+}

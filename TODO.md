@@ -1,3 +1,5 @@
+# 必ず .clinerules を確認し、開発ルールを守るようにしてください
+
 - [x] フロントエンドが期待する `/api/stocks/<symbol>` エンドポイントを実装
 - [x] 移動平均取得の URL をフロントエンドと合わせる（`/api/moving_average/<symbol>/`）
 + [x] バックエンド側で CORS 設定が必要なら追加
