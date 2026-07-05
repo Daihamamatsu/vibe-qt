@@ -1,13 +1,16 @@
 # Node.js
-node_modules/
-package-lock.json
-npm-debug.log
+**/node_modules/
+**/.pnpm-store
 
-# Vue.js
+# Build outputs
 /dist/
-public/.vite-dev-server
+/build/
+out/
 
-# IDEs and editors
+# Vue dev server
+/.vite-dev-server/
+
+# IDE and editor files
 .vscode/
 .idea/
 *.iml
@@ -16,5 +19,6 @@ public/.vite-dev-server
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
+# Log files
+npm-debug.log*
+yarn-error.log*
