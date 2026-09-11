@@ -66,6 +66,14 @@ interface StockRecord {
   volume: number | null;
 }
 
+// 大きな数を K/M 単位でコンパクトに表示（例: 30000000 -> "30M"）。
+// 出来高軸のラベルと tooltip の両方で使用する。
+function formatCompact(value: number): string {
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1).replace(/\.0$/, '')}M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1).replace(/\.0$/, '')}K`;
+  return `${value}`;
+}
+
 const symbol = ref('AAPL');
 // Yahoo Finance 取得期間（yfinance の period 値）
 const period = ref('1mo');
@@ -89,6 +97,10 @@ async function fetchStockData() {
         tooltip: {
           trigger: 'axis',
           axisPointer: { type: 'cross' },
+          // 出来高を tooltip でも K/M 表記にする（軸ラベルと揃える）。
+          // ローソク足は [open, close, low, high] の配列値なのでそのまま連結表示
+          valueFormatter: (value: number | number[]) =>
+            Array.isArray(value) ? value.join(', ') : formatCompact(Number(value)),
         },
         // ローソク足（上段）と出来高（下段）の軸カーソルを同期する
         axisPointer: { link: [{ xAxisIndex: 'all' }] },
@@ -112,12 +124,8 @@ async function fetchStockData() {
             gridIndex: 1,
             splitNumber: 2,
             axisLabel: {
-              // 大きな数を桁区切り（千・百万単位）でコンパクトに表示
-              formatter: (value: number) => {
-                if (value >= 1e6) return `${(value / 1e6).toFixed(1).replace(/\.0$/, '')}M`;
-                if (value >= 1e3) return `${(value / 1e3).toFixed(1).replace(/\.0$/, '')}K`;
-                return `${value}`;
-              },
+              // 大きな数を K/M 単位でコンパクトに表示（tooltip と共通の書式）
+              formatter: (value: number) => formatCompact(value),
             },
           },
         ],

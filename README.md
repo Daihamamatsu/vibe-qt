@@ -170,7 +170,6 @@ docker compose -f stock-app/docker-compose.yml exec db sqlite3 /data/db/stock.db
 - `DEBUG` / `SECRET_KEY` / `ALLOWED_HOSTS` を環境変数から読み込むように変更
 - `unique_together`（非推奨）を `UniqueConstraint` 制約に置換
 - CI（GitHub Actions で pytest を実行するワークフロー）を追加
-- CI（GitHub Actions で pytest を実行するワークフロー）を追加
 
 ## 備考（Issue #25: 出来高バーのチャート表示）
 
