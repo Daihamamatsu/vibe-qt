@@ -3,6 +3,36 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from .models import StockRecord
 from .serializers import StockRecordSerializer
+from .yahoo import SYMBOL_RE, VALID_PERIODS, StockFetchError, fetch_and_save
+
+
+@api_view(['POST'])
+def stock_fetch(request):
+    """POST /api/stocks/fetch/ — Yahoo Finance から日足株価を取得して DB に保存。
+
+    リクエストボディ: {"symbol": "AAPL", "period": "1mo"}
+    period: 5d / 1mo / 3mo / 6mo / 1y / 2y / 5y
+    """
+    data = request.data if isinstance(request.data, dict) else {}
+    symbol = str(data.get('symbol') or '').strip().upper()
+    period = str(data.get('period') or '1mo')
+    if not SYMBOL_RE.match(symbol):
+        return Response(
+            {'detail': f'invalid symbol: {symbol}'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if period not in VALID_PERIODS:
+        return Response(
+            {'detail': f'invalid period: {period}'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        result = fetch_and_save(symbol, period)
+    except LookupError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    except StockFetchError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+    return Response(result)
 
 
 @api_view(['GET'])

@@ -7,11 +7,13 @@
     python -m pytest tests/ -v
 """
 import datetime
+from unittest import mock
 
 import pytest
 from rest_framework.test import APIClient
 
 from stockapp.app.models import StockRecord
+from stockapp.app.yahoo import StockFetchError
 
 
 @pytest.fixture
@@ -123,5 +125,95 @@ def test_moving_average_invalid_days_400(api_client, stock_records, query):
     """days が不正（非整数・1 未満）なときは 500 ではなく 400 を返すこと。"""
     response = api_client.get(f"/api/moving_average/AAPL/{query}")
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# POST /api/stocks/fetch/ （Yahoo Finance 株価取得・保存 / Issue #23）
+# ---------------------------------------------------------------------------
+
+def test_stock_list_includes_ohlcv(api_client, stock_records):
+    """株価リストが open/high/low/volume キーも含むこと。"""
+    response = api_client.get("/api/stocks/")
+    assert response.status_code == 200
+    first = response.json()[0]
+    for key in ("open", "high", "low", "volume"):
+        assert key in first
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"symbol": "AAPL", "period": "99x"},
+        {"symbol": "BAD SYMBOL", "period": "1mo"},
+        {"period": "1mo"},
+        {},
+    ],
+    ids=["bad-period", "bad-symbol", "no-symbol", "empty"],
+)
+def test_stock_fetch_validation(api_client, payload):
+    """symbol/period が不正なときは 400 を返すこと（Yahoo は呼ばない）。"""
+    with mock.patch(
+        "stockapp.app.views.fetch_and_save",
+        side_effect=AssertionError("不正な入力で呼ばれるべきではない"),
+    ):
+        response = api_client.post("/api/stocks/fetch/", payload, format="json")
+    assert response.status_code == 400
+
+
+def test_stock_fetch_success(api_client, db):
+    """取得に成功すれば DB に保存され、保存結果を返すこと。"""
+
+    def fake_fetch_and_save(symbol, period="1mo"):
+        StockRecord.objects.create(
+            symbol=symbol,
+            date=datetime.date(2026, 9, 11),
+            open="150.5000", high="155.0000", low="150.0000",
+            close="154.0000", volume=1000,
+        )
+        return {
+            "symbol": symbol, "period": period, "fetched": 1,
+            "created": 1, "updated": 0,
+            "start_date": "2026-09-11", "end_date": "2026-09-11",
+        }
+
+    with mock.patch(
+        "stockapp.app.views.fetch_and_save",
+        side_effect=fake_fetch_and_save,
+    ):
+        response = api_client.post(
+            "/api/stocks/fetch/", {"symbol": "aapl", "period": "5d"}, format="json"
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fetched"] == 1
+    assert data["created"] == 1
+    # シンボルは大文字に正規化されて保存される
+    assert data["symbol"] == "AAPL"
+    assert StockRecord.objects.filter(symbol="AAPL").count() == 1
+
+
+def test_stock_fetch_no_data_404(api_client):
+    """Yahoo からデータが返らない（未知のシンボル等）ときは 404 を返すこと。"""
+    with mock.patch(
+        "stockapp.app.views.fetch_and_save",
+        side_effect=LookupError("該当社種 NOSUCH の株価データがありませんでした"),
+    ):
+        response = api_client.post(
+            "/api/stocks/fetch/", {"symbol": "NOSUCH", "period": "1mo"}, format="json"
+        )
+    assert response.status_code == 404
+
+
+def test_stock_fetch_yahoo_error_502(api_client):
+    """Yahoo Finance への通信に失敗したときは 500 ではなく 502 を返すこと。"""
+    with mock.patch(
+        "stockapp.app.views.fetch_and_save",
+        side_effect=StockFetchError("Yahoo Finance の取得に失敗しました"),
+    ):
+        response = api_client.post(
+            "/api/stocks/fetch/", {"symbol": "AAPL", "period": "1mo"}, format="json"
+        )
+    assert response.status_code == 502
 
 
