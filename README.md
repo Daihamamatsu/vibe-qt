@@ -99,6 +99,7 @@ npm run dev
 | GET | `/api/stocks/` | 全レコードのリスト（日付降順） |
 | GET | `/api/stocks/<symbol>/` | 指定シンボルの株価（日付降順） |
 | GET | `/api/moving_average/<symbol>/?days=N` | 直近 N 日（既定 5）の終値移動平均。`days` は正の整数（非整数・1 未満は 400）。データなしなら 404 |
+| POST | `/api/stocks/fetch/` | Yahoo Finance（yfinance）から日足 OHLC を取得して DB に保存（upsert）。Body: `{"symbol": "AAPL", "period": "1mo"}`（period: 5d / 1mo / 3mo / 6mo / 1y / 2y / 5y）。データなし 404、Yahoo 通信エラー 502 |
 
 レスポンスの例:
 
@@ -153,6 +154,13 @@ docker compose -f stock-app/docker-compose.yml exec db sqlite3 /data/db/stock.db
 - `INSTALLED_APPS` に `django.contrib.auth` を追加（DRF の無名ユーザー生成に必要）
 - URL 解決順を修正（router の `{pk}` がシンボル文字列を先取りしていた問題）
 - バックエンド用のマイグレーション（`app/migrations`）を追加
+
+## 備考（Issue #23: yfinance 株価取得 + ローソク足チャート）
+
+- `StockRecord` に `open` / `high` / `low` / `volume` フィールドを追加（既存行は close 値で backfill）
+- `POST /api/stocks/fetch/` を追加（yfinance で日足 OHLC を取得し DB に upsert、シンボルは `SYMBOL_RE` で検証）
+- フロントエンドのチャートを日足ローソク足に変更（日本式: 陽線=赤 / 陰線=緑、日付昇順で表示）
+- backend コンテナは Yahoo Finance（query1.finance.yahoo.com）と通信可能なネットワーク接続を必要とする
 
 ## 備考（PR #20 レビュー対応）
 
