@@ -112,6 +112,18 @@ describe('computeTurtle: ATR（True Range の単純移動平均）', () => {
     expect(rows[13].atr).toBe(2);
     expect(rows[29].atr).toBe(2);
   });
+
+  it('一定 TR=2 系列で既定の atrPeriod (20) では i=19 から ATR = 2、stop = 12 - 2*2 = 8', () => {
+    const rows = computeTurtle(makeConstantTrBars(30));
+    // 20 日分が揃う前 (i < 19) は ATR / stop は null
+    expect(rows[18].atr).toBeNull();
+    expect(rows[18].trailingStop).toBeNull();
+    // 20 日目から ATR = 2、stop = 直近高値 12 - 2*2 = 8
+    expect(rows[19].atr).toBe(2);
+    expect(rows[19].trailingStop).toBe(8);
+    expect(rows[29].atr).toBe(2);
+    expect(rows[29].trailingStop).toBe(8);
+  });
 });
 
 describe('computeTurtle: トレーリングストップ（直近10日高値 - 2*N）', () => {

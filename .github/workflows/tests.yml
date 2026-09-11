@@ -22,7 +22,7 @@ jobs:
       - name: pytest の実行
         run: python -m pytest tests/ -v
 
-  frontend-build:
+  frontend-checks:
     runs-on: ubuntu-latest
     steps:
       - name: レポジトリの取得
