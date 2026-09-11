@@ -21,3 +21,24 @@ jobs:
 
       - name: pytest の実行
         run: python -m pytest tests/ -v
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: レポジトリの取得
+        uses: actions/checkout@v4
+
+      - name: Node.js のセットアップ
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: stock-app/frontend/package-lock.json
+
+      - name: 依存関係のインストール
+        run: npm ci
+        working-directory: stock-app/frontend
+
+      - name: ビルドの実行
+        run: npm run build
+        working-directory: stock-app/frontend
