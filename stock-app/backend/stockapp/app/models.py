@@ -6,4 +6,10 @@ class StockRecord(models.Model):
     close = models.DecimalField(max_digits=12, decimal_places=4)
 
     class Meta:
-        unique_together = ('symbol', 'date')
+        # Django 4.1+ で非推奨の unique_together を制約定義に置き換え
+        constraints = [
+            models.UniqueConstraint(
+                fields=('symbol', 'date'),
+                name='stockrecord_symbol_date_uniq',
+            ),
+        ]
