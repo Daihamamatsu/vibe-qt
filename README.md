@@ -39,7 +39,8 @@
 │   ├── frontend/               # Vue 3 フロントエンド
 │   │   ├── src/
 │   │   │   ├── App.vue
-│   │   │   └── components/Stock.vue   # チャート + 移動平均 UI
+│   │   │   ├── components/Stock.vue   # チャート + 移動平均 / タートル戦略 UI
+│   │   │   └── utils/turtle.ts        # タートルズ型 (Donchian + ATR) 計算ロジック
 │   │   ├── vite.config.ts    # 開発用プロキシ（/api -> backend）
 │   │   ├── nginx.conf        # 本番用 nginx 設定（/api -> backend）
 │   │   └── Dockerfile
@@ -176,3 +177,17 @@ docker compose -f stock-app/docker-compose.yml exec db sqlite3 /data/db/stock.db
 - ローソク足チャートの下に出来高バーを追加（2 グリッド＋2 y 軸、`axisPointer.link` で tooltip / 軸カーソルを連動）
 - 出来高バーは陽線=赤 / 陰線=緑でローソク足と同様に色分け（volume が null のレコード（close のみ手入力）はバー非表示）
 - バックエンド・DB の変更は不要（`volume` は Issue #23 で既に DB 保存・API 返却済み）
+
+## 備考（Issue #29: タートルズ型 ATR ボラティリティ・ブレイクアウト (Donchian + ATR)）
+
+- タートルズ戦略のインジケータと BUY / EXIT シグナルを表示（フロントエンドの純粋 TS モジュール `src/utils/turtle.ts` で計算、バックエンド / DB は変更なし）
+- **計算ロジック（ルックアヘッド・バイアス回避: バンドと判定は前日までのデータのみ使用）**
+  - Donchian Upper（エントリーライン）: 前日までの 20 日間の最高値（当日は除外してシフト）
+  - Donchian Lower（手仕舞いライン）: 前日までの 10 日間の最安値
+  - N (ATR): True Range の単純移動平均（14 / 20 日選択可、既定 20）
+  - BUY: 当日終値が Donchian Upper を上抜け / EXIT: 終値が Donchian Lower を下抜けまたはトレーリングストップ（直近 10 日高値 − 2×N、前日終了時点）に達した日
+  - 1 ユニット推奨株数: `floor((口座資金 × 0.01) / (N × 1株あたりの価値))`
+  - ピラミッディング目標: 買値 +0.5N / +1.0N / +1.5N、ストップロス: 買値 −2N
+- **描画**: メインチャートに DC20 / DC10 を破線でオーバーレイ、BUY（赤）/ EXIT（緑）マーカー（日本式カラー）、ピラミッド目標・ストップを破線ガイド（markLine）、下部サブパネルに ATR ライン
+- **情報パネル**: 表示 ON/OFF、ATR 期間 (N) 選択、口座資金・買値入力（買値は最新終値を既定）、直近 N / 推奨株数 / 目標価格リストを表示
+- `chartOptions` を computed 化し、パラメータ変更でチャートが自動再描画されるように変更
