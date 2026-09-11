@@ -25,8 +25,8 @@
       </p>
     </div>
 
-    <!-- チャート表示（日足ローソク足） -->
-    <v-chart :option="chartOptions" style="height:400px;" v-if="data.length > 0"></v-chart>
+    <!-- チャート表示（日足ローソク足 + 出来高バー） -->
+    <v-chart :option="chartOptions" style="height:480px;" v-if="data.length > 0"></v-chart>
 
     <!-- 移動平均計算 -->
     <div class="moving-average-panel" style="margin-top:1rem;background:#f9f9f9;padding:.5rem;border-radius:.3rem;">
@@ -50,10 +50,10 @@ import type { EChartsOption } from 'echarts';
 // アプリ側で登録する必要がある（公式 README のサンプルを参照）
 import { use } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { CandlestickChart } from 'echarts/charts';
+import { BarChart, CandlestickChart } from 'echarts/charts';
 import { TooltipComponent, GridComponent } from 'echarts/components';
 
-use([CanvasRenderer, CandlestickChart, TooltipComponent, GridComponent]);
+use([CanvasRenderer, CandlestickChart, BarChart, TooltipComponent, GridComponent]);
 
 interface StockRecord {
   id: number;
@@ -64,6 +64,14 @@ interface StockRecord {
   low: number | null;
   close: number;
   volume: number | null;
+}
+
+// 大きな数を K/M 単位でコンパクトに表示（例: 30000000 -> "30M"）。
+// 出来高軸のラベルと tooltip の両方で使用する。
+function formatCompact(value: number): string {
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1).replace(/\.0$/, '')}M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1).replace(/\.0$/, '')}K`;
+  return `${value}`;
 }
 
 const symbol = ref('AAPL');
@@ -84,29 +92,79 @@ async function fetchStockData() {
     const records = (res.data as StockRecord[]).sort((a, b) => a.date.localeCompare(b.date));
     data.value = records;
     if (records.length > 0) {
+      const dates = records.map(d => d.date);
       chartOptions.value = {
-        tooltip: { trigger: 'axis' },
-        grid: { left: 70, right: 20, top: 30, bottom: 40 },
-        xAxis: { type: 'category', data: records.map(d => d.date) },
-        yAxis: { type: 'value', scale: true },
-        series: [{
-          name: symbol.value,
-          type: 'candlestick',
-          // ECharts のローソク足データ形式: [open, close, low, high]
-          data: records.map(d => [
-            Number(d.open ?? d.close),
-            Number(d.close),
-            Number(d.low ?? d.close),
-            Number(d.high ?? d.close),
-          ]),
-          // 日本式: 陽線（上昇）= 赤、陰線（下落）= 緑
-          itemStyle: {
-            color: '#e2534f',
-            color0: '#3ba272',
-            borderColor: '#e2534f',
-            borderColor0: '#3ba272',
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: { type: 'cross' },
+          // 出来高を tooltip でも K/M 表記にする（軸ラベルと揃える）。
+          // ローソク足は [open, close, low, high] の配列値なのでそのまま連結表示
+          valueFormatter: (value: number | number[]) =>
+            Array.isArray(value) ? value.join(', ') : formatCompact(Number(value)),
+        },
+        // ローソク足（上段）と出来高（下段）の軸カーソルを同期する
+        axisPointer: { link: [{ xAxisIndex: 'all' }] },
+        grid: [
+          { left: 70, right: 20, top: 30, height: '55%' },      // 上段: ローソク足
+          { left: 70, right: 20, bottom: 50, height: '18%' },    // 下段: 出来高
+        ],
+        xAxis: [
+          { type: 'category', data: dates, gridIndex: 0 },
+          {
+            type: 'category',
+            data: dates,
+            gridIndex: 1,
+            axisLabel: { show: false }, // 下段チャートの日付ラベルは非表示（上段に表示済み）
           },
-        }],
+        ],
+        yAxis: [
+          { type: 'value', scale: true, gridIndex: 0 },
+          {
+            type: 'value',
+            gridIndex: 1,
+            splitNumber: 2,
+            axisLabel: {
+              // 大きな数を K/M 単位でコンパクトに表示（tooltip と共通の書式）
+              formatter: (value: number) => formatCompact(value),
+            },
+          },
+        ],
+        series: [
+          {
+            name: symbol.value,
+            type: 'candlestick',
+            xAxisIndex: 0,
+            yAxisIndex: 0,
+            // ECharts のローソク足データ形式: [open, close, low, high]
+            data: records.map(d => [
+              Number(d.open ?? d.close),
+              Number(d.close),
+              Number(d.low ?? d.close),
+              Number(d.high ?? d.close),
+            ]),
+            // 日本式: 陽線（上昇）= 赤、陰線（下落）= 緑
+            itemStyle: {
+              color: '#e2534f',
+              color0: '#3ba272',
+              borderColor: '#e2534f',
+              borderColor0: '#3ba272',
+            },
+          },
+          {
+            name: '出来高',
+            type: 'bar',
+            xAxisIndex: 1,
+            yAxisIndex: 1,
+            // ローソク足と同様に陽線=赤 / 陰線=緑で色分け（volume が null の日はバー非表示）
+            data: records.map(d => {
+              const bullish = Number(d.close) >= Number(d.open ?? d.close);
+              return {
+                value: d.volume,
+                itemStyle: { color: bullish ? '#e2534f' : '#3ba272' },
+              };
+            }),
+          },
+        ],
       };
     }
   } catch (e) {
