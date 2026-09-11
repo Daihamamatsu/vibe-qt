@@ -22,7 +22,7 @@ jobs:
       - name: pytest の実行
         run: python -m pytest tests/ -v
 
-  frontend-build:
+  frontend-checks:
     runs-on: ubuntu-latest
     steps:
       - name: レポジトリの取得
@@ -37,6 +37,14 @@ jobs:
 
       - name: 依存関係のインストール
         run: npm ci
+        working-directory: stock-app/frontend
+
+      - name: 型チェックの実行（vue-tsc / Issue #32）
+        run: npm run typecheck
+        working-directory: stock-app/frontend
+
+      - name: ユニットテストの実行（vitest / Issue #31）
+        run: npm test
         working-directory: stock-app/frontend
 
       - name: ビルドの実行
