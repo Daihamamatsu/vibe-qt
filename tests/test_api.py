@@ -113,3 +113,15 @@ def test_moving_average_unknown_symbol_404(api_client, stock_records):
     response = api_client.get("/api/moving_average/NOSUCH/")
     assert response.status_code == 404
 
+
+@pytest.mark.parametrize(
+    "query",
+    ["?days=abc", "?days=-1", "?days=0", "?days="],
+    ids=["not-int", "negative", "zero", "empty"],
+)
+def test_moving_average_invalid_days_400(api_client, stock_records, query):
+    """days が不正（非整数・1 未満）なときは 500 ではなく 400 を返すこと。"""
+    response = api_client.get(f"/api/moving_average/AAPL/{query}")
+    assert response.status_code == 400
+
+

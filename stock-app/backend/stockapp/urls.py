@@ -1,14 +1,13 @@
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter
-from stockapp.app.views import StockViewSet, moving_average, stock_list_by_symbol
+from django.urls import path
+from stockapp.app.views import moving_average, stock_list_all, stock_list_by_symbol
 
-router = DefaultRouter()
-router.register(r'stocks', StockViewSet, basename='stock')
-
+# ルート定義（順序が重要）:
+# - シンボル指定ルート `/api/stocks/<str:symbol>/` が '/api/stocks/AAPL/' 等の
+#   全シンボル文字列をマッチするため、汎用的な router（{pk} パターン）を
+#   使わない。以前は router の {pk} がシンボル文字列を先取りして 500 を
+#   出していた（Issue #19）。
 urlpatterns = [
-    # シンボル指定エンドポイントは router より前に配置する
-    # （router の {pk} パターンが 'AAPL' 等の文字列を先取りするため）
     path('api/stocks/<str:symbol>/', stock_list_by_symbol),
     path('api/moving_average/<str:symbol>/', moving_average),
-    path('api/', include(router.urls)),
+    path('api/stocks/', stock_list_all),
 ]

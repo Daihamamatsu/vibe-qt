@@ -96,9 +96,9 @@ npm run dev
 
 | メソッド | パス | 説明 |
 |---|---|---|
-| GET | `/api/stocks/` | 全レコードのリスト |
+| GET | `/api/stocks/` | 全レコードのリスト（日付降順） |
 | GET | `/api/stocks/<symbol>/` | 指定シンボルの株価（日付降順） |
-| GET | `/api/moving_average/<symbol>/?days=N` | 直近 N 日（既定 5）の終値移動平均。データなしなら 404 |
+| GET | `/api/moving_average/<symbol>/?days=N` | 直近 N 日（既定 5）の終値移動平均。`days` は正の整数（非整数・1 未満は 400）。データなしなら 404 |
 
 レスポンスの例:
 
@@ -133,6 +133,16 @@ python -m pytest tests/ -v
 docker compose -f stock-app/docker-compose.yml exec db sqlite3 /data/db/stock.db ".tables"
 ```
 
+## セキュリティ設定（Django）
+
+`settings.py` は以下を環境変数から読みます（既定値は開発向けです）:
+
+| 変数 | 既定値 | 説明 |
+|---|---|---|
+| `DJANGO_DEBUG` | `False` | デバッグモード。docker-compose.yml が `true` を明示（本番では設定しないこと） |
+| `DJANGO_SECRET_KEY` | 開発用フォールバックキー | 本番環境では必ず上書き |
+| `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1` | カンマ区切り。`DEBUG=true` のときは `*` に自動変更 |
+
 ## 備考（Issue #19 での修正内容）
 
 - テストを FastAPI 前提から Django/DRF 前提（pytest-django）に変更し実行可能に
@@ -143,3 +153,12 @@ docker compose -f stock-app/docker-compose.yml exec db sqlite3 /data/db/stock.db
 - `INSTALLED_APPS` に `django.contrib.auth` を追加（DRF の無名ユーザー生成に必要）
 - URL 解決順を修正（router の `{pk}` がシンボル文字列を先取りしていた問題）
 - バックエンド用のマイグレーション（`app/migrations`）を追加
+
+## 備考（PR #20 レビュー対応）
+
+- `moving_average` の `days` パラメータをバリデーション（非整数・1 未満は 400、従来は 500）
+- 汎用 router を廃止し、関数ビューでルートを明示（到達不能な detail ルートの排除）
+- `.dockerignore` 追加（backend: 開発用 DB・pycache / frontend: node_modules・dist）
+- `DEBUG` / `SECRET_KEY` / `ALLOWED_HOSTS` を環境変数から読み込むように変更
+- `unique_together`（非推奨）を `UniqueConstraint` 制約に置換
+- CI（GitHub Actions で pytest を実行するワークフロー）を追加
