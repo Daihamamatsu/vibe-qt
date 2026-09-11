@@ -31,6 +31,14 @@ import { ref, watch } from 'vue';
 import axios from 'axios';
 import VChart from 'vue-echarts';
 import type { EChartsOption } from 'echarts';
+// vue-echarts v8 では echarts のレンダラー・チャート・コンポーネントを
+// アプリ側で登録する必要がある（公式 README のサンプルを参照）
+import { use } from 'echarts/core';
+import { CanvasRenderer } from 'echarts/renderers';
+import { LineChart } from 'echarts/charts';
+import { TooltipComponent, GridComponent } from 'echarts/components';
+
+use([CanvasRenderer, LineChart, TooltipComponent, GridComponent]);
 
 const symbol = ref('AAPL');
 const data = ref<Array<{ date: string; close: number }>>([]);
