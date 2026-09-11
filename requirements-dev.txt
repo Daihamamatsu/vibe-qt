@@ -1,0 +1,4 @@
+# テスト実行用の依存関係
+-r stock-app/backend/requirements.txt
+pytest>=8
+pytest-django>=4.8

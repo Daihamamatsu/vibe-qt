@@ -1,0 +1,4 @@
+# フロントエンドの Docker イメージに含めたくないファイル
+# （ビルド内で新規に npm install / vite build するため）
+node_modules/
+dist/

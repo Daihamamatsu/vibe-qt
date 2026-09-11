@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   backend:
     build: ./backend
@@ -7,6 +5,9 @@ services:
       - ./backend:/app
     ports:
       - "8000:8000"
+    environment:
+      # 開発環境では明示的に DEBUG を有効化（本番では設定しないこと）
+      - DJANGO_DEBUG=true
     depends_on:
       - db
 
@@ -17,11 +18,14 @@ services:
     depends_on:
       - backend
 
+  # SQLite データの共有ホスト。
+  # backend と同一の DB ファイル（./backend/db/stock.db）を /data/db として共有し、
+  # クエリ確認用に常駐させる（nouchka/sqlite3 は CLI イメージのため、
+  # データアクセス用途として存続プロセスを明示している）。
+  # 例: docker compose exec db sqlite3 /data/db/stock.db ".tables"
   db:
     image: nouchka/sqlite3
     volumes:
-      - db_data:/data/db
-    command: sqlite3 /data/db/stock.db
-
-volumes:
-  db_data:
+      - ./backend/db:/data/db
+    entrypoint: ["sh", "-c"]
+    command: ["tail -f /dev/null"]

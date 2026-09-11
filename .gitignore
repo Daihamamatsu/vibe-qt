@@ -1,11 +1,16 @@
 # Node.js
 node_modules/
 npm-debug.log
+dist/
 
 # Python
 __pycache__/
 *.py[cod]
 .env
+.pytest_cache/
+
+# SQLite
+*.db
 
 # VS Code
 .vscode/
