@@ -1,47 +1,115 @@
 # tests/test_api.py
+"""株価 API（Django/DRF）のテスト。
+
+リポジトリのルートディレクトリから実行する:
+
+    pip install -r requirements-dev.txt
+    python -m pytest tests/ -v
 """
-FastAPI の TestClient を使った簡易テスト例。
-実際のエンドポイントやモデルに合わせて調整してください。
-"""
+import datetime
 
 import pytest
-from fastapi.testclient import TestClient
+from rest_framework.test import APIClient
 
-# ← ここをあなたのアプリケーションモジュール名に書き換えてください
-try:
-    from app.main import app
-except Exception as e:   # pragma: no cover
-    raise ImportError("app.main をインポートできません。パスを確認してください。") from e
+from stockapp.app.models import StockRecord
 
-client = TestClient(app)
+
+@pytest.fixture
+def api_client():
+    """DRF のテストクライアントを返す。"""
+    return APIClient()
+
+
+@pytest.fixture
+def stock_records(db):
+    """テストデータを投入する: AAPL（5 営業日分）と GOOG（1 日分）。
+
+    db フィクスチャはテストごとにトランザクションでロールバックされる。
+    """
+    base = datetime.date(2026, 9, 11)
+    closes = [150.0, 152.0, 151.0, 155.0, 154.0]
+    objects = [
+        StockRecord(
+            symbol="AAPL",
+            date=base - datetime.timedelta(days=5 - i),
+            close=str(c),
+        )
+        for i, c in enumerate(closes)
+    ]
+    objects.append(StockRecord(symbol="GOOG", date=base, close="100.0"))
+    StockRecord.objects.bulk_create(objects)
+    return objects
+
 
 # ---------------------------------------------------------------------------
-# ユーザー関連のサンプルテスト（実際のエンドポイントに合わせて調整）
+# GET /api/stocks/ （全銘柄リスト）
 # ---------------------------------------------------------------------------
 
-def test_get_users():
-    """GET /api/v1/users/ が 200 を返し、リストを返すことを確認する。"""
-    response = client.get("/api/v1/users/")
+def test_stock_list(api_client, stock_records):
+    """/api/stocks/ が 200 を返し、全レコードのリストを返すこと。"""
+    response = api_client.get("/api/stocks/")
     assert response.status_code == 200
     data = response.json()
     assert isinstance(data, list)
-    if data:  # 空でも OK
-        user = data[0]
-        assert "id" in user
-        assert "email" in user
+    assert len(data) == 6
+    first = data[0]
+    for key in ("id", "symbol", "date", "close"):
+        assert key in first
 
 
-def test_create_user():
-    """POST /api/v1/users/ が 201 を返し、作成したユーザー情報を返すことを確認する。"""
-    payload = {"email": "test@example.com", "password": "secret"}
-    response = client.post("/api/v1/users/", json=payload)
-    assert response.status_code == 201
+# ---------------------------------------------------------------------------
+# GET /api/stocks/<symbol>/ （シンボル指定の株価一覧）
+# ---------------------------------------------------------------------------
+
+def test_stock_list_by_symbol(api_client, stock_records):
+    """/api/stocks/AAPL/ が AAPL のみを日付降順で返すこと。"""
+    response = api_client.get("/api/stocks/AAPL/")
+    assert response.status_code == 200
     data = response.json()
-    assert data["email"] == payload["email"]
-    assert "id" in data
+    assert len(data) == 5
+    assert all(record["symbol"] == "AAPL" for record in data)
+    dates = [record["date"] for record in data]
+    assert dates == sorted(dates, reverse=True)
 
 
-def test_get_user_not_found():
-    """存在しないユーザー ID に対して 404 を返すことを確認する。"""
-    response = client.get("/api/v1/users/9999")
+def test_stock_list_unknown_symbol_returns_empty(api_client, stock_records):
+    """データのないシンボルは空リストを返すこと。"""
+    response = api_client.get("/api/stocks/NOSUCH/")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_stock_list_by_symbol_without_slash(api_client, stock_records):
+    """trailing slash なし呼び出し（フロントエンドの実リクエスト形態）が
+    リダイレクト解決されてデータを取得できること。"""
+    response = api_client.get("/api/stocks/AAPL", follow=True)
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 5
+
+
+# ---------------------------------------------------------------------------
+# GET /api/moving_average/<symbol>/ （移動平均）
+# ---------------------------------------------------------------------------
+
+def test_moving_average(api_client, stock_records):
+    """最新 3 日の平均が正しく計算されること: (151+155+154)/3 = 153.33..."""
+    response = api_client.get("/api/moving_average/AAPL/?days=3")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["symbol"] == "AAPL"
+    assert data["moving_average"] == pytest.approx(153.33333333333334)
+
+
+def test_moving_average_default_days(api_client, stock_records):
+    """days 未指定時は 5 日が既定値になること: (150+152+151+155+154)/5 = 152.4。"""
+    response = api_client.get("/api/moving_average/AAPL/")
+    assert response.status_code == 200
+    assert response.json()["moving_average"] == pytest.approx(152.4)
+
+
+def test_moving_average_unknown_symbol_404(api_client, stock_records):
+    """データのないシンボルは 404 を返すこと。"""
+    response = api_client.get("/api/moving_average/NOSUCH/")
     assert response.status_code == 404
+
