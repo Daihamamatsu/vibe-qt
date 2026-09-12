@@ -33,7 +33,42 @@
     </div>
 
     <!-- チャート表示（日足ローソク足 + 出来高バー + タートル ATR サブパネル + 下部ズームスライダー） -->
-    <v-chart ref="chartRef" :option="chartOptions" :style="{ height: turtleEnabled ? '640px' : '480px' }" v-if="data.length > 0"></v-chart>
+    <!-- chart-wrapper: 固定情報パネルの position 参照容器 -->
+    <div ref="wrapperRef" class="chart-wrapper">
+      <v-chart ref="chartRef" :option="chartOptions" :style="{ height: turtleEnabled ? '640px' : '480px' }" v-if="data.length > 0"></v-chart>
+      <!-- 固定情報パネル: ホバー中のローソク足の正確な価格・出来高を表示（ヘッダーでドラッグ可能） -->
+      <div v-if="data.length > 0" ref="panelRef" class="info-panel" :style="panelStyle">
+        <!-- ドラッグバー: ポインターはここだけ捕捉する（本体はクリック透過でクロスヘア維持） -->
+        <div
+          class="info-panel-handle"
+          @pointerdown="onPanelPointerDown"
+          @pointermove="onPanelPointerMove"
+          @pointerup="onPanelPointerUp"
+          @pointercancel="onPanelPointerUp"
+        >⠿ 現在値</div>
+        <table class="info-table">
+          <tbody>
+            <tr><th>日付</th><td>{{ hoverRecord ? hoverRecord.date : '—' }}</td></tr>
+            <tr><th>始値</th><td>{{ fmtPrice(hoverRecord?.open) }}</td></tr>
+            <tr><th>高値</th><td>{{ fmtPrice(hoverRecord?.high) }}</td></tr>
+            <tr><th>安値</th><td>{{ fmtPrice(hoverRecord?.low) }}</td></tr>
+            <tr><th>終値</th><td>{{ fmtPrice(hoverRecord?.close) }}</td></tr>
+            <tr>
+              <th>前日比</th>
+              <td :style="hoverChange ? { color: hoverChange.diff >= 0 ? '#e2534f' : '#3ba272' } : {}">
+                {{
+                  hoverChange
+                    ? `${hoverChange.diff > 0 ? '+' : ''}${hoverChange.diff.toFixed(2)} (${hoverChange.diff > 0 ? '+' : ''}${hoverChange.pct.toFixed(2)}%)`
+                    : '—'
+                }}
+              </td>
+            </tr>
+            <tr><th>出来高</th><td>{{ fmtVolume(hoverRecord?.volume) }}</td></tr>
+            <tr v-if="turtleEnabled"><th>ATR (N)</th><td>{{ fmtPrice(hoverTurtle?.atr) }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
 
     <!-- 移動平均計算 -->
     <div class="moving-average-panel" style="margin-top:1rem;background:#f9f9f9;padding:.5rem;border-radius:.3rem;">
@@ -140,6 +175,10 @@ const displayPeriod = ref('1y');
 const displayCount = ref<number | string | null>(null);
 // vue-echarts コンポーネント参照（dispatchAction でズームを操作するため）
 const chartRef = ref<InstanceType<typeof VChart> | null>(null);
+// チャート容器参照（固定情報パネルの position 基準）
+const wrapperRef = ref<HTMLDivElement | null>(null);
+// 固定情報パネルの要素参照（クランプ時にサイズを測定する）
+const panelRef = ref<HTMLDivElement | null>(null);
 // ブラウザ自動化での挙動確認のためチャート参照を公開（開発サーバーのみ、本番ビルドには含まれない）(Issue #36)
 if (import.meta.env.DEV) {
   (window as Window & { __stockChartRef?: typeof chartRef }).__stockChartRef = chartRef;
@@ -298,11 +337,30 @@ function onChartWheel(e: WheelEvent) {
 // カスタム wheel handler の install / 外しをチャート実例のライフサイクルに合わせて行う
 // （v-chart はシンボル切替・データ消去時の再マウントで容器も実例も入れ替わるため）
 let removeWheelListener: (() => void) | null = null;
+// 'updateAxisPointer' イベントの購読解除関数（固定情報パネル用）
+let removeAxisPointerHandler: (() => void) | null = null;
+// チャート容器の ResizeObserver 破棄関数（情報パネルの位置を再クランプする）
+let removePanelResizeObserver: (() => void) | null = null;
+
+// 'updateAxisPointer' イベントのハンドラ: ホバー中のローソク足の dataIndex（生インデックス）で
+// 固定情報パネルを更新する。グリッド外など dataIndex が無い場合は更新せず直近の値を保持する
+function onAxisPointerUpdate(...args: unknown[]) {
+  const params = args[0] as { dataIndex?: number } | undefined;
+  const i = params?.dataIndex;
+  if (typeof i === 'number' && i >= 0 && i < data.value.length) {
+    hoverIndex.value = i;
+  }
+}
+
 watch(
   () => chartRef.value?.chart,
   (chart) => {
     removeWheelListener?.();
     removeWheelListener = null;
+    removeAxisPointerHandler?.();
+    removeAxisPointerHandler = null;
+    removePanelResizeObserver?.();
+    removePanelResizeObserver = null;
     if (!chart) return;
     const rootEl = (chartRef.value?.root as unknown as HTMLElement | undefined) ?? null;
     if (!rootEl) return;
@@ -310,11 +368,42 @@ watch(
     removeWheelListener = () => {
       rootEl.removeEventListener('wheel', onChartWheel, { capture: true });
     };
+    // 固定情報パネル: 軸カーソルイベントに購読する。
+    // ECharts はアクション由来のイベント名を小文字化して発火するため
+    // （registerAction 内で createEventType が toLowerCase）、実際には発火する
+    // 小文字版と、将来のバージョンのために大文字版の両方に購読する。
+    // payload は axisTrigger の戻り値で、ホバー中のローソク足の生 dataIndex を持つ
+    // （グリッド外 = leave の時は dataIndex が無い）
+    const inst = chart as unknown as EChartsType;
+    for (const name of ['updateAxisPointer', 'updateaxispointer']) {
+      inst.on(name, onAxisPointerUpdate);
+    }
+    removeAxisPointerHandler = () => {
+      for (const name of ['updateAxisPointer', 'updateaxispointer']) {
+        inst.off(name, onAxisPointerUpdate);
+      }
+    };
+    // 固定情報パネル: 容器サイズが変わった時（タートル表示の切替 / ウィンドウリサイズ）に
+    // パネル位置を再クランプする
+    const wrapperEl = wrapperRef.value;
+    if (wrapperEl && typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => {
+        clampPanelPos();
+      });
+      ro.observe(wrapperEl);
+      removePanelResizeObserver = () => {
+        ro.disconnect();
+      };
+    }
   },
 );
 onBeforeUnmount(() => {
   removeWheelListener?.();
   removeWheelListener = null;
+  removeAxisPointerHandler?.();
+  removeAxisPointerHandler = null;
+  removePanelResizeObserver?.();
+  removePanelResizeObserver = null;
   if (wheelThrottleTimer !== null) clearTimeout(wheelThrottleTimer);
 });
 
@@ -359,6 +448,113 @@ const unitShares = computed<number>(() => {
   if (price === null || atr === null) return 0;
   return computeUnitShares(accountValue.value, atr, price);
 });
+
+// =====================================================================
+// 固定情報パネル（ホバー中のローソク足の正確な価格・出来高を表示）
+// - 標準 tooltip の内容表示は tooltip.showContent = false で無効化し、
+//   クロスヘア（軸カーソル）はそのまま維持する
+// - ECharts の 'updateAxisPointer' イベントの dataIndex（生インデックス）を
+//   受け取って data.value 配列の該当レコードを表示する
+// - ポインタがグリッド外に出ると payload は空になるため、その時は直近の
+//   値を保持する（「固定」パネルの挙動。データ更新時にのみリセットする）
+// =====================================================================
+// ホバー中のローソク足のインデックス（data.value 配列の生インデックス、null = まだホバーしていない）
+const hoverIndex = ref<number | null>(null);
+// 情報パネルの位置（チャート容器内の左上座標。既定は左上隅）
+const panelPos = ref({ x: 10, y: 10 });
+
+// ホバー中のローソク足（範囲外なら null。例: データ更新直後の古いインデックス）
+const hoverRecord = computed<StockRecord | null>(() => {
+  const i = hoverIndex.value;
+  if (i === null || i < 0 || i >= data.value.length) return null;
+  return data.value[i];
+});
+// 同じローソク足のタートル行（ATR は N 日分データが揃うまで null）
+const hoverTurtle = computed<TurtleBar | null>(() => {
+  const i = hoverIndex.value;
+  if (i === null || i < 0 || i >= turtle.value.length) return null;
+  return turtle.value[i];
+});
+// 前日比（前日終値に対する終値の差と変化率）
+const hoverChange = computed<{ diff: number; pct: number } | null>(() => {
+  const i = hoverIndex.value;
+  if (i === null || i < 1) return null;
+  const cur = data.value[i];
+  const prev = data.value[i - 1];
+  if (cur.close == null || prev.close == null || prev.close === 0) return null;
+  const diff = cur.close - prev.close;
+  return { diff, pct: (diff / prev.close) * 100 };
+});
+
+// 情報パネルの位置スタイル
+const panelStyle = computed(() => ({
+  left: `${panelPos.value.x}px`,
+  top: `${panelPos.value.y}px`,
+}));
+
+// --- 値の書式化（K/M 省略なしの正確な値を表示） ---
+// 価格系: 桁区切り + 小数 2〜4 桁
+function fmtPrice(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  return v.toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
+// 出来高: 桁区切りの整数（例: 53,456,789）
+function fmtVolume(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  return Math.round(v).toLocaleString('ja-JP');
+}
+
+// --- パネルのドラッグ（ドラッグバーのみポインターを捕捉する） ---
+let panelDragStart: { pointerX: number; pointerY: number; startX: number; startY: number } | null = null;
+
+// パネル位置をチャート容器の範囲内に収める
+function clampPanelPos() {
+  const wrapper = wrapperRef.value;
+  const panel = panelRef.value;
+  if (!wrapper || !panel) return;
+  const maxX = Math.max(0, wrapper.clientWidth - panel.offsetWidth);
+  const maxY = Math.max(0, wrapper.clientHeight - panel.offsetHeight);
+  panelPos.value = {
+    x: Math.min(Math.max(panelPos.value.x, 0), maxX),
+    y: Math.min(Math.max(panelPos.value.y, 0), maxY),
+  };
+}
+
+function onPanelPointerDown(e: PointerEvent) {
+  if (e.button !== 0) return;
+  // ポインターをキャプチャすると、バーの外に出ても move/up を確実に受信できる
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  panelDragStart = {
+    pointerX: e.clientX,
+    pointerY: e.clientY,
+    startX: panelPos.value.x,
+    startY: panelPos.value.y,
+  };
+  e.preventDefault();
+}
+
+function onPanelPointerMove(e: PointerEvent) {
+  if (!panelDragStart) return;
+  const wrapper = wrapperRef.value;
+  const panel = panelRef.value;
+  if (!wrapper || !panel) return;
+  // 移動分を適用し、容器の範囲内にクランプする
+  const maxX = Math.max(0, wrapper.clientWidth - panel.offsetWidth);
+  const maxY = Math.max(0, wrapper.clientHeight - panel.offsetHeight);
+  panelPos.value = {
+    x: Math.min(Math.max(panelDragStart.startX + (e.clientX - panelDragStart.pointerX), 0), maxX),
+    y: Math.min(Math.max(panelDragStart.startY + (e.clientY - panelDragStart.pointerY), 0), maxY),
+  };
+}
+
+function onPanelPointerUp(e: PointerEvent) {
+  if (!panelDragStart) return;
+  panelDragStart = null;
+  const el = e.currentTarget as HTMLElement | null;
+  if (el && el.hasPointerCapture?.(e.pointerId)) {
+    el.releasePointerCapture(e.pointerId);
+  }
+}
 
 // チャート設定: ローソク足 + 出来高 +（タートル表示ON時）Donchian バンド / シグナル / ATR パネル。
 // computed 化により、データ・ATR 期間・口座資金・買値の変更で自動再描画される。
@@ -516,11 +712,9 @@ const chartOptions = computed<EChartsOption>(() => {
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'cross' },
-      // 出来高を tooltip でも K/M 表記にする（軸ラベルと揃える）。
-      // ローソク足は [open, close, low, high] の配列値なのでそのまま連結表示
-      // ローソク足は [open, close, low, high] の配列値になり型が広いので unknown で受け取る
-      valueFormatter: (value: unknown): string =>
-        Array.isArray(value) ? value.join(', ') : formatCompact(Number(value)),
+      // 標準 tooltip の内容表示を無効化（クロスヘアは維持）—
+      // ホバー中のローソク足の正確な価格・出来高は固定情報パネルに表示する
+      showContent: false,
     },
     // 各グリッドの軸カーソルを同期する（tooltip は全系列共通で表示）
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
@@ -673,6 +867,8 @@ function applyDisplayWindow() {
 // nextTick で遅らせるのは、vue-echarts が新オプションをチャートに反映した
 // 後に dispatchAction を実行するため。
 watch(data, () => {
+  // 新データ: ホバー中のインデックスをリセット（古いインデックスは範囲外になり得るため）
+  hoverIndex.value = null;
   nextTick(applyDisplayWindow);
 });
 
@@ -692,4 +888,22 @@ watch([displayPeriod, displayCount], () => {
 .turtle-table { margin-top:.5rem; border-collapse:collapse; }
 .turtle-table th, .turtle-table td { border:1px solid #ddd; padding:.3rem .6rem; text-align:left; font-size:.9rem; }
 .turtle-table th { background:#eee; }
+/* --- 固定情報パネル（チャート容器内の position 基準） --- */
+.chart-wrapper { position:relative; }
+.info-panel {
+  position:absolute; z-index:10; min-width:10rem;
+  background:rgba(255,255,255,.93); border:1px solid #bbb; border-radius:.4rem;
+  box-shadow:0 2px 8px rgba(0,0,0,.18); font-size:.85rem;
+  pointer-events:none; /* 本体はポインター透過: クロスヘアが更新され続ける */
+  user-select:none;
+}
+.info-panel-handle {
+  pointer-events:auto; cursor:move; touch-action:none;
+  padding:.2rem .5rem; background:#f0f0f0; border-bottom:1px solid #ddd;
+  border-radius:.4rem .4rem 0 0; font-weight:bold;
+}
+.info-table { width:100%; border-collapse:collapse; }
+.info-table th, .info-table td { padding:.1rem .5rem; text-align:left; white-space:nowrap; }
+.info-table th { color:#555; font-weight:normal; }
+.info-table td { font-variant-numeric:tabular-nums; }
 </style>
