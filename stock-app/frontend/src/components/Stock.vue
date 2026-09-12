@@ -16,6 +16,13 @@
           <option value="2y">2y</option>
           <option value="5y">5y</option>
         </select>
+        <label>表示:</label>
+        <select v-model="displayPeriod">
+          <option v-for="p in DISPLAY_PRESETS" :key="p.value" :value="p.value">{{ p.label }}</option>
+        </select>
+        <label>本数:</label>
+        <!-- 表示するローソク足の本数指定（空欄 = 表示期間に従う。本数指定が期間より優先される） -->
+        <input v-model.number="displayCount" type="number" min="1" step="1" placeholder="期間に連動" style="width:5.5rem;" />
         <button @click="fetchStockData">取得</button>
         <button :disabled="fetching" @click="fetchFromYahoo">Yahoo Finance から取得</button>
       </div>
@@ -25,8 +32,8 @@
       </p>
     </div>
 
-    <!-- チャート表示（日足ローソク足 + 出来高バー + タートル ATR サブパネル） -->
-    <v-chart :option="chartOptions" :style="{ height: turtleEnabled ? '640px' : '480px' }" v-if="data.length > 0"></v-chart>
+    <!-- チャート表示（日足ローソク足 + 出来高バー + タートル ATR サブパネル + 下部ズームスライダー） -->
+    <v-chart ref="chartRef" :option="chartOptions" :style="{ height: turtleEnabled ? '640px' : '480px' }" v-if="data.length > 0"></v-chart>
 
     <!-- 移動平均計算 -->
     <div class="moving-average-panel" style="margin-top:1rem;background:#f9f9f9;padding:.5rem;border-radius:.3rem;">
@@ -94,12 +101,14 @@ import type { EChartsOption, SeriesOption } from 'echarts';
 import { use } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { BarChart, CandlestickChart, LineChart, ScatterChart } from 'echarts/charts';
-import { TooltipComponent, GridComponent } from 'echarts/components';
+import { TooltipComponent, GridComponent, DataZoomComponent } from 'echarts/components';
+// 表示ウィンドウ（表示期間 / ローソク足本数）計算モジュール
+import { DISPLAY_PRESETS, getVisibleWindow } from '../utils/display';
 // タートルズ型 (Donchian + ATR) 計算モジュール（ルックアヘッドなし: 前日までのデータのみ使用）
 import { computePyramidTargets, computeTurtle, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar } from '../utils/turtle';
 
-use([CanvasRenderer, CandlestickChart, BarChart, LineChart, ScatterChart, TooltipComponent, GridComponent]);
+use([CanvasRenderer, CandlestickChart, BarChart, LineChart, ScatterChart, TooltipComponent, GridComponent, DataZoomComponent]);
 
 interface StockRecord {
   id: number;
@@ -124,6 +133,12 @@ const symbol = ref('AAPL');
 // Yahoo Finance 取得期間（yfinance の period 値）
 const period = ref('1mo');
 const data = ref<StockRecord[]>([]);
+// 表示ウィンドウ: 表示期間プリセット（営業日換算、既定は 1 年分を表示）
+const displayPeriod = ref('1y');
+// 表示ウィンドウ: ローソク足本数指定（表示期間より優先。null / 空欄 = 期間に従う）
+const displayCount = ref<number | string | null>(null);
+// vue-echarts コンポーネント参照（dispatchAction でズームを操作するため）
+const chartRef = ref<InstanceType<typeof VChart> | null>(null);
 const maDays = ref(5);
 const movingAverage = ref<number | null>(null);
 const fetching = ref(false);
@@ -166,15 +181,26 @@ const unitShares = computed<number>(() => {
   return computeUnitShares(accountValue.value, atr, price);
 });
 
+// 表示ウィンドウ内のローソク足（表示期間 / 本数で末尾部分を切り出す、Issue #36）
+const visibleRecords = computed<StockRecord[]>(() =>
+  getVisibleWindow(data.value, displayPeriod.value, displayCount.value),
+);
+// 表示ウィンドウ内のタートル行（ローソク足と同一の末尾部分列）
+const visibleTurtleRows = computed<TurtleBar[]>(() =>
+  getVisibleWindow(turtle.value, displayPeriod.value, displayCount.value),
+);
+
 // チャート設定: ローソク足 + 出来高 +（タートル表示ON時）Donchian バンド / シグナル / ATR パネル。
 // computed 化により、データ・ATR 期間・口座資金・買値の変更で自動再描画される。
 const chartOptions = computed<EChartsOption>(() => {
-  const records = data.value;
+  const records = visibleRecords.value;
   if (records.length === 0) return {};
   const dates = records.map(d => d.date);
   const on = turtleEnabled.value;
-  const rows = turtle.value;
+  const rows = visibleTurtleRows.value;
   const tg = on ? targets.value : null;
+  // dataZoom が操作する X 軸インデックス（タートル表示ON時は ATR パネルの軸も含む）
+  const xAxisIndexes = on ? [0, 1, 2] : [0, 1];
 
   // --- 系列の定義 ---
   const series: SeriesOption[] = [
@@ -325,11 +351,30 @@ const chartOptions = computed<EChartsOption>(() => {
     },
     // 各グリッドの軸カーソルを同期する（tooltip は全系列共通で表示）
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
+    // dataZoom (Issue #36): inside = ドラッグでパン / ホイールでスクロール / Ctrl+ホイールでズーム、
+    // slider = 下部スライダー（可視範囲の表示と直接操作）
+    dataZoom: [
+      {
+        type: 'inside',
+        xAxisIndex: xAxisIndexes,
+        zoomOnMouseWheel: 'ctrl', // Ctrl+ホイール = ズーム
+        moveOnMouseWheel: true, // ホイール = スクロール（パン）
+        moveOnMouseMove: true, // ドラッグ = パン
+        minSpan: 2, // 最小表示幅（ウィンドウの 2%。単一ローソクへの退化を防ぐ）
+      },
+      {
+        type: 'slider',
+        xAxisIndex: xAxisIndexes,
+        bottom: 5,
+        height: 25,
+        showDetail: false,
+      },
+    ],
     grid: on
       ? [
           { left: 70, right: 20, top: 30, height: '45%' },      // 上段: ローソク足
           { left: 70, right: 20, top: '58%', height: '14%' },   // 中段: 出来高
-          { left: 70, right: 20, bottom: 15, height: '12%' },   // 下段: ATR
+          { left: 70, right: 20, bottom: 45, height: '12%' },   // 下段: ATR（bottom 45 = 下部スライダー 0〜30px を避ける）
         ]
       : [
           { left: 70, right: 20, top: 30, height: '55%' },      // 上段: ローソク足
@@ -435,6 +480,12 @@ watch(symbol, () => {
   // タートル戦略の状態をリセット（買値は次回取得時に最新終値へ自動設定される）
   turtleBuyPrice.value = null;
   buyPriceManual.value = false;
+});
+
+// 新データ取得時（取得ボタン / 銘柄変更など）にズームを全表示へリセット (Issue #36)。
+// 表示期間・本数の切替では意図的にリセットしない（ユーザーのズーム位置を保持）。
+watch(data, () => {
+  chartRef.value?.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
 });
 </script>
 
