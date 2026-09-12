@@ -191,6 +191,7 @@ docker compose -f stock-app/docker-compose.yml exec db sqlite3 /data/db/stock.db
 - **描画**: メインチャートに DC20 / DC10 を破線でオーバーレイ、BUY（赤）/ EXIT（緑）マーカー（日本式カラー）、ピラミッド目標・ストップを破線ガイド（markLine）、下部サブパネルに ATR ライン
 - **情報パネル**: 表示 ON/OFF、ATR 期間 (N) 選択、口座資金・買値入力（買値は最新終値を既定）、直近 N / 推奨株数 / 目標価格リストを表示
 - `chartOptions` を computed 化し、パラメータ変更でチャートが自動再描画されるように変更
+- 完全な使い方ガイド（UI 操作手順 / チャートの見方 / ポジションサイジング）は [`docs/turtle-strategy.md`](docs/turtle-strategy.md) を参照
 
 ## 備考（Issue #36: チャートの表示ウィンドウ指定 + ドラッグ・スクロールによるパン）
 
