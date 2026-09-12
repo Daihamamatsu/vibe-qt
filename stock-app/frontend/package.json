@@ -2,6 +2,7 @@
   "name": "stock-frontend",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -17,10 +18,10 @@
     "vue-echarts": "^8.0.1"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^4.2.0",
+    "@vitejs/plugin-vue": "^6.0.8",
     "typescript": "^5.9.3",
-    "vite": "^4.4.9",
-    "vitest": "^1.6.1",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.0",
     "vue-tsc": "^3.3.11"
   }
 }
