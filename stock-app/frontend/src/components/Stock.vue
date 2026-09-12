@@ -544,6 +544,7 @@ const chartOptions = computed<EChartsOption>(() => {
         bottom: 5,
         height: 25,
         showDetail: false,
+        minSpan: 2, // 最小表示幅（inside と同一。ハンドルを同一点に寄せて単一ローソク化するのを防ぐ）
       },
     ],
     grid: on
