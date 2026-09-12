@@ -92,7 +92,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import axios from 'axios';
 import VChart from 'vue-echarts';
 import type { EChartsOption, SeriesOption } from 'echarts';
@@ -104,7 +104,7 @@ import { CanvasRenderer } from 'echarts/renderers';
 import { BarChart, CandlestickChart, LineChart, ScatterChart } from 'echarts/charts';
 import { TooltipComponent, GridComponent, DataZoomComponent } from 'echarts/components';
 // 表示ウィンドウ（表示期間 / ローソク足本数）計算モジュール
-import { DISPLAY_PRESETS, getVisibleWindow } from '../utils/display';
+import { DISPLAY_PRESETS, getDisplayRange } from '../utils/display';
 // タートルズ型 (Donchian + ATR) 計算モジュール（ルックアヘッドなし: 前日までのデータのみ使用）
 import { computePyramidTargets, computeTurtle, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar } from '../utils/turtle';
@@ -287,8 +287,9 @@ function onChartWheel(e: WheelEvent) {
     const s = Math.min(Math.max(cursor - (cursor - start) * ratio, 0), 100 - newSpan);
     throttledApplyRange(s, s + newSpan);
   } else {
-    // パン: スクロール下 = 新データ側へ (start 減) / 上 = 旧データ側へ
-    const shift = -span * PAN_RATIO_PER_STEP * steps * (delta > 0 ? 1 : -1);
+    // パン: ホイール下 = 新データ側へ (start 増) / ホイール上 = 旧データ側へ (start 減)
+    // （ECharts 内蔵 moveOnMouseWheel と同じ方向: 上 = 旧データ側へ移動）
+    const shift = span * PAN_RATIO_PER_STEP * steps * (delta > 0 ? 1 : -1);
     const s = Math.min(Math.max(start + shift, 0), 100 - span);
     throttledApplyRange(s, s + span);
   }
@@ -359,23 +360,17 @@ const unitShares = computed<number>(() => {
   return computeUnitShares(accountValue.value, atr, price);
 });
 
-// 表示ウィンドウ内のローソク足（表示期間 / 本数で末尾部分を切り出す、Issue #36）
-const visibleRecords = computed<StockRecord[]>(() =>
-  getVisibleWindow(data.value, displayPeriod.value, displayCount.value),
-);
-// 表示ウィンドウ内のタートル行（ローソク足と同一の末尾部分列）
-const visibleTurtleRows = computed<TurtleBar[]>(() =>
-  getVisibleWindow(turtle.value, displayPeriod.value, displayCount.value),
-);
-
 // チャート設定: ローソク足 + 出来高 +（タートル表示ON時）Donchian バンド / シグナル / ATR パネル。
 // computed 化により、データ・ATR 期間・口座資金・買値の変更で自動再描画される。
 const chartOptions = computed<EChartsOption>(() => {
-  const records = visibleRecords.value;
+  // チャートには取得済みデータすべてを入れる (Issue #36)。
+  // 表示期間 / 本数は初期表示範囲（dataZoom）だけを制御し、
+  // 表示ウィンドウより古いデータはパン（ホイール / ドラッグ / スライダー）で見られる。
+  const records = data.value;
   if (records.length === 0) return {};
   const dates = records.map(d => d.date);
   const on = turtleEnabled.value;
-  const rows = visibleTurtleRows.value;
+  const rows = turtle.value;
   const tg = on ? targets.value : null;
   // dataZoom が操作する X 軸インデックス（タートル表示ON時は ATR パネルの軸も含む）
   const xAxisIndexes = on ? [0, 1, 2] : [0, 1];
@@ -663,10 +658,27 @@ watch(symbol, () => {
   buyPriceManual.value = false;
 });
 
-// 新データ取得時（取得ボタン / 銘柄変更など）にズームを全表示へリセット (Issue #36)。
-// 表示期間・本数の切替では意図的にリセットしない（ユーザーのズーム位置を保持）。
+// 表示ウィンドウ（表示期間 / 本数 = 直近 N 本）を表示範囲に適用する (Issue #36)。
+// チャートには全データが入っているため、適用後はパン（ホイール / ドラッグ / スライダー）で
+// 表示ウィンドウより古いデータも表示できる。
+function applyDisplayWindow() {
+  const total = data.value.length;
+  if (total < 2) return; // チャート非表示 / 単一ローソク時は範囲調整の対象外
+  const { start, end } = getDisplayRange(total, displayPeriod.value, displayCount.value);
+  applyWheelRange(start, end);
+}
+
+// 新データ取得時（取得ボタン / 銘柄変更など）に表示ウィンドウを適用 (Issue #36)。
+// nextTick で遅らせるのは、vue-echarts が新オプションをチャートに反映した
+// 後に dispatchAction を実行するため。
 watch(data, () => {
-  chartRef.value?.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
+  nextTick(applyDisplayWindow);
+});
+
+// 表示期間 / 本数の切替時は表示ウィンドウを再適用する。
+// （旧データはチャートに残り続けるので、切替後もパンで過去を辿れる）
+watch([displayPeriod, displayCount], () => {
+  applyDisplayWindow();
 });
 </script>
 

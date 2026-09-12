@@ -1,7 +1,9 @@
-// 表示ウィンドウ（表示期間 / ローソク足本数）の解決と末尾部分列取得 (Issue #36)
+// 表示ウィンドウ（表示期間 / ローソク足本数）の解決と初期表示範囲の計算 (Issue #36)
 //
-// チャートに表示するローソク足の範囲を「表示期間」または「ローソク足本数」で
-// 指定するための純関数群。Stock.vue 側で computed 経由で使用し、
+// チャートの初期表示範囲を「表示期間」または「ローソク足本数」で指定するための
+// 純関数群。チャートには取得済みデータすべてが入り、表示期間より古いデータは
+// パン（ホイール / ドラッグ / スライダー）で表示できる。
+// Stock.vue 側で dispatchAction 経由で使用し、
 // ここに単体テスト (display.test.ts) で挙動を固定する。
 
 /** 表示期間プリセット。count = null は「全件」を意味する。 */
@@ -40,21 +42,30 @@ export function resolveDisplayCount(
 }
 
 /**
- * records の末尾（最新側）から表示本数分を切り出す。
+ * 表示期間 / 本数に応じた初期表示範囲を ECharts dataZoom の percent で返す。
  *
- * - count = null の場合（「全」）は全件を返す
- * - count が総数より大きい場合は全件を返す
- * - records が空の場合は空配列を返す
+ * チャートには全データが入り、こちらは「直近 N 本」の初期表示範囲だけを指定する。
+ * より古いデータはパン（ホイール / ドラッグ / スライダー）で表示できる。
+ *
+ * - count = null（「全」）または count が総数以上 → 全表示 (0〜100%)
+ * - total < 2 → 範囲調整が意味をなさないため全表示 (0〜100%)
+ * - ECharts の category 軸では percent とインデックスは
+ *   index = percent/100 × (total - 1) で対応する（dataExtent = [0, total-1]）ため、
+ *   直近 n 本（インデックス total-n … total-1）の開始位置は
+ *   start = (total - n) / (total - 1) × 100 [%]
+ * - 結果の幅が dataZoom の minSpan (2%) より小さい場合（例: 本数 1）は、
+ *   ECharts 側で自動的に minSpan まで拡大される（AxisProxy のクランプ）ため、
+ *   ここでは特に処理しない
  */
-export function getVisibleWindow<T>(
-  records: readonly T[],
+export function getDisplayRange(
+  total: number,
   preset: string,
   custom: number | string | null | undefined,
-): T[] {
-  const total = records.length;
-  if (total === 0) return [];
+): { start: number; end: number } {
+  if (total < 2) return { start: 0, end: 100 };
   const count = resolveDisplayCount(preset, custom);
-  if (count === null) return records.slice();
-  const n = Math.min(count, total);
-  return records.slice(total - n);
+  const n = Math.min(count ?? total, total);
+  if (n >= total) return { start: 0, end: 100 };
+  const start = Math.round(((total - n) / (total - 1)) * 10000) / 100;
+  return { start, end: 100 };
 }
