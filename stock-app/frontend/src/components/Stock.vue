@@ -92,13 +92,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import axios from 'axios';
 import VChart from 'vue-echarts';
 import type { EChartsOption, SeriesOption } from 'echarts';
 // vue-echarts v8 では echarts のレンダラー・チャート・コンポーネントを
 // アプリ側で登録する必要がある（公式 README のサンプルを参照）
 import { use } from 'echarts/core';
+import type { EChartsType } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { BarChart, CandlestickChart, LineChart, ScatterChart } from 'echarts/charts';
 import { TooltipComponent, GridComponent, DataZoomComponent } from 'echarts/components';
@@ -139,6 +140,183 @@ const displayPeriod = ref('1y');
 const displayCount = ref<number | string | null>(null);
 // vue-echarts コンポーネント参照（dispatchAction でズームを操作するため）
 const chartRef = ref<InstanceType<typeof VChart> | null>(null);
+// ブラウザ自動化での挙動確認のためチャート参照を公開（開発サーバーのみ、本番ビルドには含まれない）(Issue #36)
+if (import.meta.env.DEV) {
+  (window as Window & { __stockChartRef?: typeof chartRef }).__stockChartRef = chartRef;
+}
+
+// =====================================================================
+// マウスホイール操作 (Issue #36): Ctrl+ホイール = ズーム / 通常ホイール = パン
+// ECharts 内蔵の inside-dataZoom ではこの 2 つを分離できない（Ctrl+ホイールで
+// ズームとスクロールが同時に発動するため）、内蔵のホイール処理は
+// zoomOnMouseWheel / moveOnMouseWheel = false で無効化し、こちらで実装する。
+// （ドラッグパンは内蔵の moveOnMouseMove を使い続ける）
+// handler はチャート容器にキャプチャ位相で付け、そこでイベントを消費するため、
+// 同じホイールイベントが ECharts 内部の roam にも渡らず二重適用されない。
+// =====================================================================
+const WHEEL_MIN_SPAN = 2; // dataZoom-inside の minSpan と一致させること
+const WHEEL_STEP_PX = 120; // ホイール 1 ステップに相当する deltaY のピクセル数
+const WHEEL_MAX_STEPS = 3; // 1 イベントで処理するステップ数の上限（高速スクロールの暴走防止）
+const ZOOM_FACTOR_PER_STEP = 1.1; // ステップあたりのズーム係数（最大 1.1^3 ≒ 1.33）
+const PAN_RATIO_PER_STEP = 0.05; // ステップあたりのパン量（表示幅の 5%）
+const WHEEL_THROTTLE_MS = 100; // ECharts 内蔵 roam と同じ 100ms fixRate 絞り込み
+
+type WheelGridRect = { x: number; y: number; width: number; height: number };
+
+// vue-echarts のコンポーネント参照から ECharts インスタンスを取得（未初期化時 null）
+function getChartInstance(): EChartsType | null {
+  const chart = chartRef.value?.chart;
+  // vue-echarts の型定義では chart が ShallowRef だが、アクセス時には既にアンラップされて
+  // ECharts インスタンスそのものが返る
+  return (chart as unknown as EChartsType | undefined) ?? null;
+}
+
+// 全グリッドの矩形（チャート未準備時は null）
+function getGridRects(m: unknown): WheelGridRect[] | null {
+  const getComponent = (
+    m as {
+      getComponent?: (type: string, index: number) => {
+        coordinateSystem?: { getRect?: () => WheelGridRect };
+      } | undefined;
+    }
+  )?.getComponent;
+  if (typeof getComponent !== 'function') return null;
+  const grids: WheelGridRect[] = [];
+  for (let i = 0; ; i++) {
+    const gridModel = getComponent.call(m, 'grid', i);
+    const rect = gridModel?.coordinateSystem?.getRect?.();
+    if (!gridModel || !rect) break;
+    grids.push(rect);
+  }
+  return grids.length > 0 ? grids : null;
+}
+
+// 現在可視のローソク足が乗っている dataZoom (inside) の表示範囲 (percent) を取得
+function getVisiblePercentRange(m: unknown): { start: number; end: number } {
+  const dzModel = (
+    m as {
+      getComponent?: (type: string, index: number) => {
+        get?: (key: string) => unknown;
+      } | undefined;
+    }
+  )?.getComponent?.('dataZoom', 0);
+  const start = dzModel?.get?.('start');
+  const end = dzModel?.get?.('end');
+  return typeof start === 'number' && typeof end === 'number' ? { start, end } : { start: 0, end: 100 };
+}
+
+// 新規表示範囲を適用（dispatchAction dataZoom。link された全 dataZoom がまとめて更新される）
+function applyWheelRange(start: number, end: number) {
+  const inst = getChartInstance();
+  if (!inst || inst.isDisposed()) return;
+  inst.dispatchAction({
+    type: 'dataZoom',
+    start,
+    end,
+    // ECharts 内蔵 roam と同じアニメーションパラメータ
+    animation: { easing: 'cubicOut', duration: 100 },
+  });
+}
+
+let wheelThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+let wheelNextAllowedAt = 0;
+
+// fixRate 絞り込み（ECharts 内蔵 roam と同じ挙動）: 100ms ごとに最大 1 回。
+// 間に溜まったイベントは最後の範囲のみが有効。
+function throttledApplyRange(start: number, end: number) {
+  const now = Date.now();
+  const delay = Math.max(0, wheelNextAllowedAt - now);
+  if (wheelThrottleTimer !== null) {
+    // 未適用の古い範囲を破棄（最新の範囲を優先する fixRate の语义）
+    clearTimeout(wheelThrottleTimer);
+    wheelThrottleTimer = null;
+  }
+  wheelNextAllowedAt = now + WHEEL_THROTTLE_MS;
+  if (delay === 0) {
+    applyWheelRange(start, end);
+  } else {
+    wheelThrottleTimer = setTimeout(() => {
+      wheelThrottleTimer = null;
+      applyWheelRange(start, end);
+    }, delay);
+  }
+}
+
+function onChartWheel(e: WheelEvent) {
+  const inst = getChartInstance();
+  const rootEl = (chartRef.value?.root as unknown as HTMLElement | undefined) ?? null;
+  if (!inst || !rootEl) return;
+  // ヒット判定: プロット領域内（ローソク足グリッドの x 範囲 × 全グリッドの y 範囲）でのみ反応し、
+  // 外側ではイベントを通す（ページが通常通りスクロールできる）
+  // getModel は型定義上 private なので、必要な部分だけ拾う型にキャストする
+  const gm = (inst as unknown as { getModel: () => unknown }).getModel();
+  const grids = getGridRects(gm);
+  if (!grids || grids[0].width <= 0) return;
+  const box = rootEl.getBoundingClientRect();
+  const px = e.clientX - box.left;
+  const py = e.clientY - box.top;
+  const gridX0 = grids[0].x;
+  const gridX1 = gridX0 + grids[0].width;
+  let gridTop = Infinity;
+  let gridBottom = -Infinity;
+  for (const g of grids) {
+    gridTop = Math.min(gridTop, g.y);
+    gridBottom = Math.max(gridBottom, g.y + g.height);
+  }
+  if (px < gridX0 || px > gridX1 || py < gridTop || py > gridBottom) return;
+  // イベントを消費: ページスクロール抑制 + ECharts 内部 roam での二重処理防止
+  e.preventDefault();
+  e.stopPropagation();
+
+  const { start, end } = getVisiblePercentRange(gm);
+  const span = Math.min(Math.max(end - start, WHEEL_MIN_SPAN), 100);
+
+  // ホイール量をステップ化（deltaMode=1 は行単位のため 40px/行 に換算）
+  const rawDelta = e.deltaY === 0 ? e.deltaX : e.deltaY;
+  if (rawDelta === 0) return;
+  const delta = e.deltaMode === 1 ? rawDelta * 40 : rawDelta;
+  const steps = Math.min(WHEEL_MAX_STEPS, Math.max(1, Math.round(Math.abs(delta) / WHEEL_STEP_PX)));
+
+  if (e.ctrlKey || e.metaKey) {
+    // ズーム（カーソル位置のデータを固定して縮放）: スクロール下 = ズームイン / 上 = ズームアウト
+    const factor = Math.pow(ZOOM_FACTOR_PER_STEP, steps);
+    const newSpan = Math.min(Math.max(span * (delta > 0 ? 1 / factor : factor), WHEEL_MIN_SPAN), 100);
+    // カーソル位置に対応する percent
+    const cursor = ((px - gridX0) / grids[0].width) * span + start;
+    const ratio = newSpan / span;
+    const s = Math.min(Math.max(cursor - (cursor - start) * ratio, 0), 100 - newSpan);
+    throttledApplyRange(s, s + newSpan);
+  } else {
+    // パン: スクロール下 = 新データ側へ (start 減) / 上 = 旧データ側へ
+    const shift = -span * PAN_RATIO_PER_STEP * steps * (delta > 0 ? 1 : -1);
+    const s = Math.min(Math.max(start + shift, 0), 100 - span);
+    throttledApplyRange(s, s + span);
+  }
+}
+
+// カスタム wheel handler の install / 外しをチャート実例のライフサイクルに合わせて行う
+// （v-chart はシンボル切替・データ消去時の再マウントで容器も実例も入れ替わるため）
+let removeWheelListener: (() => void) | null = null;
+watch(
+  () => chartRef.value?.chart,
+  (chart) => {
+    removeWheelListener?.();
+    removeWheelListener = null;
+    if (!chart) return;
+    const rootEl = (chartRef.value?.root as unknown as HTMLElement | undefined) ?? null;
+    if (!rootEl) return;
+    rootEl.addEventListener('wheel', onChartWheel, { passive: false, capture: true });
+    removeWheelListener = () => {
+      rootEl.removeEventListener('wheel', onChartWheel, { capture: true });
+    };
+  },
+);
+onBeforeUnmount(() => {
+  removeWheelListener?.();
+  removeWheelListener = null;
+  if (wheelThrottleTimer !== null) clearTimeout(wheelThrottleTimer);
+});
+
 const maDays = ref(5);
 const movingAverage = ref<number | null>(null);
 const fetching = ref(false);
@@ -351,14 +529,17 @@ const chartOptions = computed<EChartsOption>(() => {
     },
     // 各グリッドの軸カーソルを同期する（tooltip は全系列共通で表示）
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
-    // dataZoom (Issue #36): inside = ドラッグでパン / ホイールでスクロール / Ctrl+ホイールでズーム、
+    // dataZoom (Issue #36): inside = ドラッグでパン（ホイール操作は後述のカスタム handler が担当）、
     // slider = 下部スライダー（可視範囲の表示と直接操作）
     dataZoom: [
       {
         type: 'inside',
         xAxisIndex: xAxisIndexes,
-        zoomOnMouseWheel: 'ctrl', // Ctrl+ホイール = ズーム
-        moveOnMouseWheel: true, // ホイール = スクロール（パン）
+        // Ctrl+ホイール = ズーム / 通常ホイール = パンは下のカスタム handler で実現するため、
+        // ECharts 内蔵のホイール処理は無効化（内蔵では両方を分離できない:
+        // Ctrl+ホイールでズームとスクロールが同時に発動してしまう）
+        zoomOnMouseWheel: false,
+        moveOnMouseWheel: false,
         moveOnMouseMove: true, // ドラッグ = パン
         minSpan: 2, // 最小表示幅（ウィンドウの 2%。単一ローソクへの退化を防ぐ）
       },
