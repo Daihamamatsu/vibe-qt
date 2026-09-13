@@ -236,3 +236,15 @@ docker compose -f stock-app/docker-compose.yml exec db sqlite3 /data/db/stock.db
 - チャート表示エリア（y 軸自動レンジ: ローソク足 + Donchian バンド + markLine 値）の上下限を超えそうな場合はレンジ内にクランプし、ローソク足との重なりを許容
 - `Stock.vue` の `chartOptions` 内の BUY/EXIT scatter のみ変更（`turtle.ts` の計算ロジックは変更なし、買い増し / 計画 EXIT マーカー（Issue #44）は対象外）
 - `npm test`（29 件パス）/ `npm run typecheck` / `npm run build` で検証
+
+## 備考（Issue #55: タートル戦略の ATR を Wilder 平滑化に変更 + 買い増し目標の基準価格を直前ユニット基準に修正）
+
+- **ATR (N) の算出方式変更**（`src/utils/turtle.ts`）: True Range の**単純移動平均 (SMA)** をクラシック・タートル本来の **Wilder 平滑化（EMA 相当）**に変更
+  - `i < atrPeriod - 1` は `null`（データ不足、従来の挙動を維持）
+  - 初期値 = 最初の `atrPeriod` 日間の TR の単純平均、以降 `ATR = (前 ATR × (atrPeriod − 1) + 当日 TR) ÷ atrPeriod`
+- **買い増し計画の基準価格を直前ユニット基準（チェーン方式）に修正**（`computeTurtlePlan`）:
+  - 従来は P2/P3/P4 とも常に `buyPrice + {0.5, 1.0, 1.5} × N`（初回買値基準）だったのに対し、P2 基準 = 初回買値 / P3 基準 = P2 の目標ライン / P4 基準 = P3 の目標ライン、`目標 = 基準 + 0.5 × N（当日）` に変更
+  - 到達したレベルの目標ラインは**到達時の価格で固定**され、次レベルの基準となる（N が一定なら従来の買値基準と一致）
+  - ストップ (`buyPrice − 2N`)・DC10 判定・ルックアヘッド非依存・純関数・公開インターフェース（`mult` フィールド含む）は不変
+- **テスト**（`src/utils/turtle.test.ts`）: Wilder の null / 初期値 / 再帰更新・買い増しのチェーン基準（P3 が固定された P2 ラインから更新されるケース）を追加し、ATR 変更の影響を受ける期待値を更新。ユニットテスト計 82 件パス、`npm run typecheck` / `npm run build` はパス
+- **ドキュメント**: `docs/turtle-strategy.md` の ATR / ピラミッディング / 機械的計画の記述、`Stock.vue` の買い増しマーカーコメントを新ルールに更新

@@ -32,7 +32,7 @@ export interface TurtleBar {
   donchianUpper: number | null;
   /** 前日までの exitDays 日間の最安値 (手仕舞いライン) */
   donchianLower: number | null;
-  /** N(ATR): True Range の単純移動平均 */
+  /** N(ATR): True Range の Wilder 平滑化 (初期値 = 最初の atrPeriod 日間の単純平均、以降再帰更新) */
   atr: number | null;
   /** トレーリングストップ: 直近 exitDays 日高値 (前日終了時点) - 2*N */
   trailingStop: number | null;
@@ -59,7 +59,7 @@ export function computeTurtle(bars: Bar[], params: TurtleParams = {}): TurtleBar
   const lo = bars.map(b => Number(b.low ?? b.close));
   const cl = bars.map(b => Number(b.close));
 
-  // --- True Range と ATR (TR の単純移動平均) ---
+  // --- True Range と ATR (Wilder 平滑化: EMA 相当) ---
   // TR[i] は当日 (i) と前営業日 (i-1) のデータのみ使用 (未来参照なし)
   const tr: number[] = new Array(n);
   for (let i = 0; i < n; i++) {
@@ -71,12 +71,18 @@ export function computeTurtle(bars: Bar[], params: TurtleParams = {}): TurtleBar
           Math.abs(lo[i] - cl[i - 1]),
         );
   }
+  // Wilder ATR:
+  // - i < atrPeriod - 1: null (データ不足)
+  // - i == atrPeriod - 1: 最初の atrPeriod 日間の TR の単純平均 (初期化)
+  // - i >= atrPeriod: atr[i] = (atr[i-1] * (atrPeriod - 1) + tr[i]) / atrPeriod
   const atr: (number | null)[] = new Array(n).fill(null);
-  let trSum = 0;
-  for (let i = 0; i < n; i++) {
-    trSum += tr[i];
-    if (i >= atrPeriod) trSum -= tr[i - atrPeriod];
-    if (i >= atrPeriod - 1) atr[i] = trSum / atrPeriod;
+  if (n >= atrPeriod) {
+    let seedSum = 0;
+    for (let i = 0; i < atrPeriod; i++) seedSum += tr[i];
+    atr[atrPeriod - 1] = seedSum / atrPeriod;
+    for (let i = atrPeriod; i < n; i++) {
+      atr[i] = ((atr[i - 1] as number) * (atrPeriod - 1) + tr[i]) / atrPeriod;
+    }
   }
 
   // --- Donchian バンド (前日までの範囲: 当日は除外してシフト) とシグナル ---
@@ -167,7 +173,7 @@ export function computePyramidTargets(sharePrice: number, atrN: number): Pyramid
 export interface TurtlePlanLevel {
   /** ピラミッド段数 (2 = +0.5N / 3 = +1.0N / 4 = +1.5N) */
   level: 2 | 3 | 4;
-  /** 倍率 (0.5 / 1.0 / 1.5) */
+  /** 名目倍率 (0.5 / 1.0 / 1.5)。N が一定時は初回買値比と等価。実際の目標ラインは「直前ユニットの目標ライン + 0.5 × N」で更新される */
   mult: number;
   /** 到達日 (null = 未到達) */
   date: string | null;
@@ -187,7 +193,7 @@ export interface TurtlePlanExit {
   reason: 'stop' | 'dc10' | null;
 }
 
-/** 直近日時点での再計算結果 (当日の N 基準) */
+/** 直近日時点での再計算結果 (target = 到達済みレベルは固定目標ライン / 未到達は直前目標ライン + 0.5 × N、その日の N 基準) */
 export interface TurtlePlanLatest {
   date: string;
   /** 当日の N (ATR) */
@@ -210,10 +216,14 @@ export interface TurtlePlan {
 /**
  * ブレイク日 (BUY シグナル日) 以降の買い増し (P2/P3/P4) と EXIT を機械的にシミュレートする。
  *
- * - 各日その日の N(ATR) で目標・ストップを再計算:
- *   目標 = 買値 + {0.5, 1.0, 1.5} × N / ストップ = 買値 − 2 × N
+ * 買い増しの目標ライン (チェーン方式: 基準価格は直前ユニットに更新される):
+ * - P2 基準 = 初回買値 buyPrice / P3 基準 = P2 の目標ライン / P4 基準 = P3 の目標ライン
+ * - 各日: 目標 = 基準 + 0.5 × N (その日の ATR で再計算)
+ * - レベル到達 (終値 >= 目標) 時は目標ラインを到達時の価格で固定し、
+ *   次レベルは固定価格を基準とする (未到達の場合は当日の予測ラインを基準とする)
  * - 買い増し: 終値が (>=) その日の目標に到達した日に P2/P3/P4 を記録
  *   (同日に複数レベル到達を許容)
+ * - ストップ = 買値 − 2 × N (その日の N で再計算; computeTurtle のトレーリングストップとは別物)
  * - EXIT: 終値 ≤ ストップ または 終値 < DC10 の初回到達日で計画終了
  *   (同日に両方に該当する場合は 'stop' を優先)
  *
@@ -240,23 +250,29 @@ export function computeTurtlePlan(
     const row = rows[i];
     const n = row.atr;
     if (n === null) continue; // N データ不足: その日は再計算しない
+    // 買い増し: 各日「直前ユニットの目標ライン + 0.5 × N」で目標ラインを更新
+    // (同日複数レベル到達を許容 / 到達したレベルは目標ラインを到達時の価格で固定)
+    let prevLine = buyPrice; // P1 約定 = P2 の基準
+    const lines: number[] = [];
+    for (const lv of levels) {
+      const line = lv.price !== null ? lv.price : prevLine + 0.5 * n;
+      lines.push(line);
+      if (lv.date === null && row.close >= line) {
+        lv.date = row.date;
+        lv.price = line; // 到達時の目標ラインを固定
+        lv.hitClose = row.close;
+      }
+      prevLine = lv.price !== null ? lv.price : line;
+    }
     latest = {
       date: row.date,
       n,
-      target1: buyPrice + 0.5 * n,
-      target2: buyPrice + 1.0 * n,
-      target3: buyPrice + 1.5 * n,
+      target1: lines[0],
+      target2: lines[1],
+      target3: lines[2],
       stop: buyPrice - 2 * n,
       dc10: row.donchianLower,
     };
-    // 買い増し: 終値がその日の目標に到達した日 (同日複数レベル到達を許容)
-    for (const lv of levels) {
-      if (lv.date === null && row.close >= buyPrice + lv.mult * n) {
-        lv.date = row.date;
-        lv.price = buyPrice + lv.mult * n;
-        lv.hitClose = row.close;
-      }
-    }
     // EXIT: ストップロス または DC10 下抜け (初回到達で計画終了)
     const stopHit = row.close <= latest.stop;
     const dc10Hit = latest.dc10 !== null && row.close < latest.dc10;

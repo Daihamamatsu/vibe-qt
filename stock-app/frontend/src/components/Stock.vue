@@ -1057,7 +1057,7 @@ const chartOptions = computed<EChartsOption>(() => {
       );
       if (buyAdds.length > 0) {
         series.push({
-          // 買い増し: 終値が 買値 + {0.5, 1.0, 1.5} × N (当日 N で再計算) に到達した日
+          // 買い増し: 終値が 直前ユニットの目標ライン + 0.5 × N (当日 N で再計算 / 到達後は到達時の価格でライン固定) に到達した日
           name: '買い増し 2/3/4',
           type: 'scatter',
           xAxisIndex: 0,
