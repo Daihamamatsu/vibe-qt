@@ -64,9 +64,36 @@
               </td>
             </tr>
             <tr><th>出来高</th><td>{{ fmtVolume(hoverRecord?.volume) }}</td></tr>
-            <tr v-if="turtleEnabled"><th>ATR (N)</th><td>{{ fmtPrice(hoverTurtle?.atr) }}</td></tr>
           </tbody>
         </table>
+        <!-- タートル戦略数値エリア (Issue #40): ホバー中のインデックス時点の数値を表示。
+             現在値テーブルと区切りの入った独立セクションで、turtleEnabled に連動して表示・非表示。
+             dataIndex マッピング・グリッド外出時の直近値保持・データ取得時のリセットは現在値パネルと共通の既存ロジックをそのまま利用する。 -->
+        <div v-if="turtleEnabled" class="turtle-section">
+          <div class="turtle-section-header">タートル戦略 (Donchian + ATR)</div>
+          <table class="info-table">
+            <tbody>
+              <tr><th>日付</th><td>{{ hoverTurtle ? hoverTurtle.date : '—' }}</td></tr>
+              <tr><th>DC20 (エントリーライン)</th><td>{{ fmtPrice(hoverTurtle?.donchianUpper) }}</td></tr>
+              <tr><th>DC10 (手仕舞いライン)</th><td>{{ fmtPrice(hoverTurtle?.donchianLower) }}</td></tr>
+              <tr><th>N (ATR)</th><td>{{ fmtPrice(hoverTurtle?.atr) }}</td></tr>
+              <tr><th>トレーリングストップ</th><td>{{ fmtPrice(hoverTurtle?.trailingStop) }}</td></tr>
+              <tr>
+                <th>シグナル</th>
+                <!-- 日本式カラー: BUY = 赤 / EXIT = 緑（チャート本体と同一） -->
+                <td
+                  :style="hoverTurtle?.buy
+                    ? { color: '#e2534f', fontWeight: 'bold' }
+                    : hoverTurtle?.exit
+                      ? { color: '#3ba272', fontWeight: 'bold' }
+                      : {}"
+                >
+                  {{ hoverTurtle?.buy ? 'BUY' : hoverTurtle?.exit ? 'EXIT' : '—' }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -457,6 +484,12 @@ const unitShares = computed<number>(() => {
 //   受け取って data.value 配列の該当レコードを表示する
 // - ポインタがグリッド外に出ると payload は空になるため、その時は直近の
 //   値を保持する（「固定」パネルの挙動。データ更新時にのみリセットする）
+// - タートル戦略数値エリア (Issue #40): 同一パネル内に現在値テーブルと
+//   区切りの入った独立セクションで、ホバー中のインデックス時点の
+//   Donchian / ATR / シグナルを表示する。turtleEnabled に連動して
+//   表示・非表示になるだけで、dataIndex マッピング・グリッド外出時の
+//   値保持・データ取得時のリセットは現在値パネルと共通のロジックをそのまま
+//   利用するため、スクリプト側の追加ロジックは不要
 // =====================================================================
 // ホバー中のローソク足のインデックス（data.value 配列の生インデックス、null = まだホバーしていない）
 const hoverIndex = ref<number | null>(null);
@@ -906,4 +939,15 @@ watch([displayPeriod, displayCount], () => {
 .info-table th, .info-table td { padding:.1rem .5rem; text-align:left; white-space:nowrap; }
 .info-table th { color:#555; font-weight:normal; }
 .info-table td { font-variant-numeric:tabular-nums; }
+/* --- タートル戦略数値エリア（固定情報パネル内、Issue #40） --- */
+/* 現在値テーブルとの視覚的な分離: 上側の区切り線 + 淡いオレンジ背景 */
+.turtle-section {
+  border-top:1px solid #bbb;
+  border-radius:0 0 .4rem .4rem;
+  background:rgba(230,126,34,.06);
+}
+.turtle-section-header {
+  padding:.2rem .5rem; background:#fdf1e3; color:#9c5a00;
+  font-weight:bold; font-size:.8rem;
+}
 </style>
