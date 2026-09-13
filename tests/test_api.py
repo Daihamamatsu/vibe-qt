@@ -7,13 +7,14 @@
     python -m pytest tests/ -v
 """
 import datetime
+import sys
 from unittest import mock
 
 import pytest
 from rest_framework.test import APIClient
 
-from stockapp.app.models import StockRecord
-from stockapp.app.yahoo import StockFetchError
+from stockapp.app.models import StockMeta, StockRecord
+from stockapp.app.yahoo import StockFetchError, fetch_and_save
 
 
 @pytest.fixture
@@ -215,5 +216,160 @@ def test_stock_fetch_yahoo_error_502(api_client):
             "/api/stocks/fetch/", {"symbol": "AAPL", "period": "1mo"}, format="json"
         )
     assert response.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# GET /api/stocks/<symbol>/meta/ （銘柄名 / Issue #49）
+# ---------------------------------------------------------------------------
+
+def test_stock_meta_returns_cached_name(api_client, db):
+    """DB に StockMeta 行があれば名称をそのまま返し、Yahoo は呼ばないこと。"""
+    StockMeta.objects.create(symbol="AAPL", name="Apple Inc.")
+    with mock.patch(
+        "stockapp.app.views.fetch_stock_name",
+        side_effect=AssertionError("DB に行があれば呼ばれるべきではない"),
+    ):
+        response = api_client.get("/api/stocks/AAPL/meta/")
+    assert response.status_code == 200
+    assert response.json() == {"symbol": "AAPL", "name": "Apple Inc."}
+
+
+def test_stock_meta_fetches_from_yahoo_when_missing(api_client, db):
+    """StockMeta 行がなければ Yahoo から取得して DB 保存の上で返すこと。"""
+    with mock.patch(
+        "stockapp.app.views.fetch_stock_name",
+        return_value="Apple Inc.",
+    ) as fetch_name:
+        response = api_client.get("/api/stocks/AAPL/meta/")
+    assert response.status_code == 200
+    assert response.json() == {"symbol": "AAPL", "name": "Apple Inc."}
+    fetch_name.assert_called_once_with("AAPL")
+    assert StockMeta.objects.filter(symbol="AAPL", name="Apple Inc.").exists()
+
+
+def test_stock_meta_negative_cache_returns_empty_name(api_client, db):
+    """空名称の行（負のキャッシュ）があれば Yahoo を再取得しないこと。"""
+    StockMeta.objects.create(symbol="AAPL", name="")
+    with mock.patch(
+        "stockapp.app.views.fetch_stock_name",
+        side_effect=AssertionError("DB に行があれば呼ばれるべきではない"),
+    ):
+        response = api_client.get("/api/stocks/AAPL/meta/")
+    assert response.status_code == 200
+    assert response.json() == {"symbol": "AAPL", "name": ""}
+
+
+def test_stock_meta_invalid_symbol_400(api_client, db):
+    """無効なシンボル（10 文字超など）は 400 を返し、Yahoo を呼ばないこと。"""
+    with mock.patch(
+        "stockapp.app.views.fetch_stock_name",
+        side_effect=AssertionError("無効シンボルで呼ばれるべきではない"),
+    ):
+        response = api_client.get("/api/stocks/" + "A" * 11 + "/meta/")
+    assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# fetch_and_save による銘柄名キャッシュ (Issue #49)
+#
+# 注意: テスト環境に pandas / yfinance が無い前提（リポジトリの既存方針:
+# 重い依存はモックで除外）のため、yfinance を sys.modules で差し替えて
+# pandas に依存しない Fake DataFrame を通す。
+# ---------------------------------------------------------------------------
+
+class _FakeIndex:
+    """pandas Index の最小限の代替（日付列、tz 無し）。"""
+
+    def __init__(self, dates):
+        self._dates = dates
+
+    @property
+    def tz(self):
+        return None
+
+    def __iter__(self):
+        return iter(self._dates)
+
+
+class _FakeRow:
+    """df.itertuples(index=False) の行の最小限の代替（大文字カラム名）。"""
+
+    def __init__(self, open_, high_, low_, close_, volume_):
+        self.Open = open_
+        self.High = high_
+        self.Low = low_
+        self.Close = close_
+        self.Volume = volume_
+
+
+class _FakeDataFrame:
+    """pandas DataFrame の最小限の代替（fetch_ohlcv が触る API のみ）。"""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.empty = len(rows) == 0
+
+    def dropna(self, subset=None):
+        return self
+
+    @property
+    def index(self):
+        # 実データ（pandas Timestamp）と同様に .date() が使える datetime を返す
+        return _FakeIndex([datetime.datetime(2026, 9, 9 + i) for i in range(len(self._rows))])
+
+    def itertuples(self, index=False):
+        return [_FakeRow(*row) for row in self._rows]
+
+
+def _make_fake_df():
+    """テスト用の日足 OHLCV Fake DataFrame（3 営業日分）を生成する。"""
+    return _FakeDataFrame([
+        (150.0, 155.0, 149.0, 154.0, 1000),
+        (151.0, 156.0, 150.0, 155.0, 1100),
+        (152.0, 157.0, 151.0, 156.0, 1200),
+    ])
+
+
+class _FakeTicker:
+    """yf.Ticker の替わり（fetch_and_save / fetch_stock_name をオフラインでテストする）。"""
+
+    def __init__(self, name_info):
+        self.name_info = name_info
+
+    def history(self, **kwargs):
+        return _make_fake_df()
+
+    @property
+    def info(self):
+        if isinstance(self.name_info, Exception):
+            raise self.name_info
+        return self.name_info
+
+
+def _patch_yfinance(name_info):
+    """yfinance モジュールを _FakeTicker を返すモックに差し替える context manager。
+
+    yahoo.py 側は関数内で遅延 import するため、sys.modules の差し替えが有効になる。
+    """
+    fake = mock.MagicMock()
+    fake.Ticker.return_value = _FakeTicker(name_info)
+    return mock.patch.dict(sys.modules, {"yfinance": fake})
+
+
+def test_fetch_and_save_caches_stock_name(db):
+    """fetch_and_save は株価と同時に銘柄名を StockMeta に保存すること。"""
+    with _patch_yfinance({"shortName": "Apple Inc."}):
+        fetch_and_save("AAPL", period="5d")
+    assert StockMeta.objects.get(symbol="AAPL").name == "Apple Inc."
+    assert StockRecord.objects.filter(symbol="AAPL").count() == 3
+
+
+def test_fetch_and_save_name_failure_is_ignored(db):
+    """銘柄名取得の失敗（例外・名称なし）が株価保存を妨げないこと（空名称で保存）。"""
+    with _patch_yfinance(RuntimeError("Yahoo が利用できません")):
+        summary = fetch_and_save("AAPL", period="5d")
+    assert summary["fetched"] == 3
+    assert StockRecord.objects.filter(symbol="AAPL").count() == 3
+    assert StockMeta.objects.get(symbol="AAPL").name == ""
 
 

@@ -6,6 +6,8 @@
       <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;">
         <label>シンボル:</label>
         <input v-model="symbol" placeholder="例：AAPL" />
+        <!-- 銘柄名（Yahoo Finance 取得、Issue #49）: 取得不能時は非表示 -->
+        <span v-if="stockName" style="color:#555;">{{ stockName }}</span>
         <label>期間:</label>
         <select v-model="period">
           <option value="5d">5d</option>
@@ -185,14 +187,14 @@ import { use } from 'echarts/core';
 import type { EChartsType } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { BarChart, CandlestickChart, LineChart, ScatterChart } from 'echarts/charts';
-import { TooltipComponent, GridComponent, DataZoomComponent } from 'echarts/components';
+import { TooltipComponent, GridComponent, DataZoomComponent, TitleComponent } from 'echarts/components';
 // 表示ウィンドウ（表示期間 / ローソク足本数）計算モジュール
-import { DISPLAY_PRESETS, getDisplayRange } from '../utils/display';
+import { DISPLAY_PRESETS, chartTitle, getDisplayRange } from '../utils/display';
 // タートルズ型 (Donchian + ATR) 計算モジュール（ルックアヘッドなし: 前日までのデータのみ使用）
 import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
 
-use([CanvasRenderer, CandlestickChart, BarChart, LineChart, ScatterChart, TooltipComponent, GridComponent, DataZoomComponent]);
+use([CanvasRenderer, CandlestickChart, BarChart, LineChart, ScatterChart, TooltipComponent, GridComponent, DataZoomComponent, TitleComponent]);
 
 interface StockRecord {
   id: number;
@@ -214,8 +216,14 @@ function formatCompact(value: number): string {
 }
 
 const symbol = ref('AAPL');
+// 銘柄名（Yahoo Finance、Issue #49）: 株価データ表示付近に示す
+const stockName = ref('');
 // Yahoo Finance 取得期間（yfinance の period 値）
 const period = ref('1mo');
+// シンボル入力の銘柄名取得デバウンス (Issue #49)
+let metaTimer: ReturnType<typeof setTimeout> | null = null;
+// シンボル形式（バックエンドの SYMBOL_RE と一致させ、銘柄名取得前の事前チェック用）
+const SYMBOL_PATTERN = /^[A-Z0-9.\-^=]{1,10}$/;
 const data = ref<StockRecord[]>([]);
 // 表示ウィンドウ: 表示期間プリセット（営業日換算、既定は 1 年分を表示）
 const displayPeriod = ref('1y');
@@ -453,6 +461,7 @@ onBeforeUnmount(() => {
   removePanelResizeObserver?.();
   removePanelResizeObserver = null;
   if (wheelThrottleTimer !== null) clearTimeout(wheelThrottleTimer);
+  if (metaTimer !== null) clearTimeout(metaTimer);
 });
 
 const maDays = ref(5);
@@ -911,6 +920,13 @@ const chartOptions = computed<EChartsOption>(() => {
   }
 
   return {
+    // 銘柄名タイトル (Issue #49): チャート左上に表示（grid の top 30px 余白内）
+    title: {
+      text: chartTitle(symbol.value, stockName.value),
+      left: 70,
+      top: 5,
+      textStyle: { fontSize: 14, fontWeight: 'bold' },
+    },
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'cross' },
@@ -1028,6 +1044,25 @@ async function fetchStockData() {
   }
 }
 
+// 銘柄名を取得 (Issue #49): バックエンド /api/stocks/<symbol>/meta/ 経由
+// （取得不能の場合は空名称として扱い、表示側では穏当に非表示にする）
+async function fetchStockMeta() {
+  const target = symbol.value.trim().toUpperCase();
+  if (!SYMBOL_PATTERN.test(target)) {
+    stockName.value = '';
+    return;
+  }
+  try {
+    const res = await axios.get(`/api/stocks/${target}/meta/`);
+    // 応答到着までにシンボルが変更された場合は古い結果を捨てる（古い名称を保持しない）
+    if (symbol.value.trim().toUpperCase() !== target) return;
+    stockName.value = res.data.name ?? '';
+  } catch (e) {
+    console.error('銘柄名取得エラー:', e);
+    if (symbol.value.trim().toUpperCase() === target) stockName.value = '';
+  }
+}
+
 async function fetchFromYahoo() {
   const target = symbol.value.trim();
   if (!target) return;
@@ -1042,6 +1077,8 @@ async function fetchFromYahoo() {
       `（新規 ${r.created} 件 / 更新 ${r.updated} 件、${r.start_date} 〜 ${r.end_date}）`;
     // 保存されたデータを DB から読み直してチャートに反映
     await fetchStockData();
+    // 直前に最新データを保存したばかりなので銘柄名も再取得 (Issue #49)
+    void fetchStockMeta();
   } catch (e: any) {
     const detail = e?.response?.data?.detail ?? e?.message ?? 'リクエストに失敗しました';
     yahooError.value = true;
@@ -1070,6 +1107,12 @@ watch(symbol, () => {
   buyPriceManual.value = false;
   turtleBreakoutDate.value = null;
   breakoutManual.value = false;
+  // 銘柄名をリセットしてデバウンス取得 (Issue #49)
+  stockName.value = '';
+  if (metaTimer !== null) clearTimeout(metaTimer);
+  metaTimer = setTimeout(() => {
+    void fetchStockMeta();
+  }, 400);
 });
 
 // 表示ウィンドウ（表示期間 / 本数 = 直近 N 本）を表示範囲に適用する (Issue #36)。

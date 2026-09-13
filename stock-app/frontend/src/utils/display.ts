@@ -69,3 +69,11 @@ export function getDisplayRange(
   const start = Math.round(((total - n) / (total - 1)) * 10000) / 100;
   return { start, end: 100 };
 }
+
+/**
+ * 銘柄タイトル (Issue #49)。
+ * 銘柄名があれば "AAPL Apple Inc."、なければシンボルのみの "AAPL" を返す。
+ */
+export function chartTitle(symbol: string, name: string): string {
+  return name ? `${symbol} ${name}` : symbol;
+}
