@@ -1,6 +1,8 @@
 from django.urls import path
 from stockapp.app.views import (
     favorite_delete,
+    favorite_list_detail,
+    favorite_lists,
     favorites,
     moving_average,
     stock_fetch,
@@ -23,9 +25,13 @@ urlpatterns = [
     path('api/stocks/<str:symbol>/meta/', stock_meta),
     path('api/stocks/<str:symbol>/', stock_list_by_symbol),
     path('api/moving_average/<str:symbol>/', moving_average),
-    # お気に入り銘柄 API (Issue #50): /api/favorites/ は /api/stocks/ と無関係な
-    # 独立プレフィックスなので <str:symbol> ルートと衝突しない
+    # お気に入り銘柄 API (Issue #50): /api/favorites/ と /api/favorite-lists/ は
+    # /api/stocks/ と無関係な独立プレフィックスなので <str:symbol> ルートと衝突しない
+    # 銘柄リスト（複数リスト化）
+    path('api/favorite-lists/', favorite_lists),
+    path('api/favorite-lists/<int:list_id>/', favorite_list_detail),
+    # お気に入り銘柄（リスト別）: 削除は /api/favorites/<list_id>/<symbol>/
     path('api/favorites/', favorites),
-    path('api/favorites/<str:symbol>/', favorite_delete),
+    path('api/favorites/<int:list_id>/<str:symbol>/', favorite_delete),
     path('api/stocks/', stock_list_all),
 ]

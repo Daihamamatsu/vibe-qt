@@ -8,10 +8,10 @@
         <input v-model="symbol" placeholder="例：AAPL" />
         <!-- 銘柄名（Yahoo Finance 取得、Issue #49）: 取得不能時は非表示 -->
         <span v-if="stockName" style="color:#555;">{{ stockName }}</span>
-        <!-- お気に入り切替 (Issue #50): 現在入力のシンボルを追加/削除 -->
+        <!-- お気に入り切替 (Issue #50): 現在入力のシンボルをアクティブリストに追加/削除 -->
         <button
           :disabled="favoriteBusy"
-          :title="isFavorite ? 'お気に入りから削除' : 'お気に入りに追加'"
+          :title="isFavorite ? 'このリストから削除' : 'このリストにお気に入りを追加'"
           :style="{ fontSize: '1.2rem', padding: '0.2rem 0.5rem', cursor: favoriteBusy ? 'wait' : 'pointer' }"
           @click="isFavorite ? removeFavorite(symbol.trim().toUpperCase()) : addFavorite()"
         >{{ isFavorite ? '★' : '☆' }}</button>
@@ -39,16 +39,30 @@
       <p v-if="yahooMessage" :style="{ marginTop: '.5rem', marginBottom: 0, color: yahooError ? '#c0392b' : '#2c7a2c' }">
         {{ yahooMessage }}
       </p>
-      <!-- お気に入り銘柄リスト (Issue #50): シンボルクリックでその銘柄へ切替 -->
+      <!-- お気に入り銘柄リスト (Issue #50): リストごとに分類、シンボルクリックでその銘柄へ切替 -->
       <div style="margin-top:.5rem;">
-        <p style="margin:0 0 .25rem;font-weight:bold;">★ お気に入り（{{ favorites.length }}/10）</p>
+        <p style="margin:0 0 .25rem;font-weight:bold;">★ お気に入り</p>
         <ul style="margin:0;padding:0;">
-          <li v-for="f in favorites" :key="f.symbol" style="margin:.15rem 0;">
+          <li v-for="g in favoriteGroups" :key="g.id" style="margin:.15rem 0;display:flex;align-items:center;">
+            <button
+              :disabled="favoriteBusy"
+              :style="{ color: g.id === activeListId ? '#1a73e8' : '#333', fontWeight: g.id === activeListId ? 'bold' : 'normal' }"
+              :title="`このリストを選択（お気に入りをこのリストに追加/削除）`"
+              @click="activeListId = g.id"
+            >{{ g.id === activeListId ? '▶' : '•' }} {{ g.name }}（{{ g.stocks.length }}）</button>
+            <button :disabled="favoriteBusy" style="margin-left:.5rem;" title="リスト名を変更" @click="renameActiveList(g.id)">名前変更</button>
+            <button :disabled="favoriteBusy" style="margin-left:.25rem;" title="リストを削除" @click="deleteActiveList(g.id)">削除</button>
+          </li>
+          <li v-if="favoriteGroups.length === 0" style="color:#888;">リストがありません</li>
+        </ul>
+        <button :disabled="favoriteBusy" style="margin:0 0 .25rem;" @click="createList">＋ 新しいリストを作成</button>
+        <ul style="margin:0;padding:0;">
+          <li v-for="f in activeGroup?.stocks ?? []" :key="f.symbol" style="margin:.15rem 0;">
             <a href="#" :style="{ color:'#1a73e8' }" @click.prevent="symbol = f.symbol">{{ f.symbol }}</a>
             <span v-if="f.name" style="color:#555;">{{ f.name }}</span>
-            <button :disabled="favoriteBusy" style="margin-left:.5rem;" title="お気に入りから削除" @click="removeFavorite(f.symbol)">✕</button>
+            <button :disabled="favoriteBusy" style="margin-left:.5rem;" title="このリストから削除" @click="removeFavorite(f.symbol)">✕</button>
           </li>
-          <li v-if="favorites.length === 0" style="color:#888;">お気に入りはありません</li>
+          <li v-if="(activeGroup?.stocks.length ?? 0) === 0" style="color:#888;">このリストには銘柄がありません</li>
         </ul>
         <p v-if="favoriteMessage" style="margin:.25rem 0 0;color:#c0392b;">{{ favoriteMessage }}</p>
       </div>
@@ -213,8 +227,20 @@ import { DISPLAY_PRESETS, chartTitle, getDisplayRange } from '../utils/display';
 // タートルズ型 (Donchian + ATR) 計算モジュール（ルックアヘッドなし: 前日までのデータのみ使用）
 import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
-import { SYMBOL_PATTERN, favoriteErrorMessage, isValidSymbol } from '../utils/favorites';
-import type { FavoriteEntry } from '../utils/favorites';
+import {
+  SYMBOL_PATTERN,
+  LIST_NAME_MAX_LENGTH,
+  addFavoriteStock,
+  createFavoriteList,
+  deleteFavoriteList,
+  favoriteErrorMessage,
+  fetchFavoriteGroups,
+  isValidListName,
+  isValidSymbol,
+  removeFavoriteStock,
+  renameFavoriteList,
+} from '../utils/favorites';
+import type { FavoriteGroup } from '../utils/favorites';
 
 use([CanvasRenderer, CandlestickChart, BarChart, LineChart, ScatterChart, TooltipComponent, GridComponent, DataZoomComponent, TitleComponent]);
 
@@ -245,18 +271,26 @@ const period = ref('1mo');
 // シンボル入力の銘柄名取得デバウンス (Issue #49)
 let metaTimer: ReturnType<typeof setTimeout> | null = null;
 // =====================================================================
-// お気に入り銘柄 (Issue #50)
+// お気に入り銘柄リスト (Issue #50)
 // =====================================================================
-// お気に入り一覧（バックエンド /api/favorites/ の登録順）。
+// 全リスト（空リスト含む）と所属銘柄（バックエンド GET /api/favorites/、作成順）。
 // 銘柄名はバックエンドが StockMeta と同期するので、ここでは表示のみ。
-const favorites = ref<FavoriteEntry[]>([]);
-// お気に入り追加・削除の操作中フラグ（二重クリック防止）
+const favoriteGroups = ref<FavoriteGroup[]>([]);
+// 現在選択中のリスト ID（null = なし。最後にリストを削除した直後など）
+const activeListId = ref<number | null>(null);
+// お気に入り・リスト操作の操作中フラグ（二重クリック防止）
 const favoriteBusy = ref(false);
 // お気に入り操作のメッセージ（エラー表示用）
 const favoriteMessage = ref('');
-// 現在入力のシンボルがお気に入りか（大文字・小文字を無視）
-const isFavorite = computed(() =>
-  favorites.value.some((f) => f.symbol === symbol.value.trim().toUpperCase()),
+// 現在選択中のリスト（未選択なら null）
+const activeGroup = computed(
+  () => favoriteGroups.value.find((g) => g.id === activeListId.value) ?? null,
+);
+// 現在入力のシンボルがアクティブリストに登録されているか（大文字・小文字を無視）
+const isFavorite = computed(
+  () =>
+    activeGroup.value !== null &&
+    activeGroup.value.stocks.some((f) => f.symbol === symbol.value.trim().toUpperCase()),
 );
 const data = ref<StockRecord[]>([]);
 // 表示ウィンドウ: 表示期間プリセット（営業日換算、既定は 1 年分を表示）
@@ -1098,23 +1132,39 @@ async function fetchStockMeta() {
 }
 
 // =====================================================================
-// お気に入り銘柄 (Issue #50): バックエンド /api/favorites/ 経由
+// お気に入り銘柄リスト (Issue #50): バックエンド /api/favorites/・/api/favorite-lists/ 経由
 // =====================================================================
 
-// お気に入り一覧をバックエンドから再取得する（銘柄名の同期もここで取り込む）
+// バックエンドエラーからステータス・detail を取り出す
+function apiError(e: unknown): { status?: number; detail?: string } {
+  const response = (e as { response?: { status?: number; data?: { detail?: string } } })
+    ?.response;
+  return { status: response?.status, detail: response?.data?.detail };
+}
+
+// リスト操作（作成・名前変更・削除）のエラーメッセージ
+function listErrorMessage(e: unknown): string {
+  const { status, detail } = apiError(e);
+  if (status === 409) return detail ? `作成できません: ${detail}` : '同じ名前のリストが既に存在します';
+  if (detail) return `リスト操作に失敗しました: ${detail}`;
+  if (status !== undefined) return `リスト操作に失敗しました（${status}）`;
+  return 'リスト操作に失敗しました（通信エラー）';
+}
+
+// 全リスト（空リスト含む）・所属銘柄をバックエンドから再取得する。
+// 銘柄名の同期もここで取り込む。選択中のリストが削除された場合は先頭を選択し直す。
 async function fetchFavorites() {
   try {
-    const res = await axios.get('/api/favorites/');
-    favorites.value = (res.data as FavoriteEntry[]).map((f) => ({
-      symbol: f.symbol,
-      name: f.name ?? '',
-    }));
+    favoriteGroups.value = await fetchFavoriteGroups();
+    if (!favoriteGroups.value.some((g) => g.id === activeListId.value)) {
+      activeListId.value = favoriteGroups.value[0]?.id ?? null;
+    }
   } catch (e) {
     console.error('お気に入り取得エラー:', e);
   }
 }
 
-// 現在入力のシンボルをお気に入りに追加する（POST /api/favorites/）
+// 現在入力のシンボルをアクティブリストに追加する（POST /api/favorites/）
 async function addFavorite() {
   const target = symbol.value.trim().toUpperCase();
   if (!isValidSymbol(target)) {
@@ -1122,29 +1172,102 @@ async function addFavorite() {
     return;
   }
   if (favoriteBusy.value) return;
+  if (activeListId.value === null) {
+    favoriteMessage.value = 'リストが未選択です。リストを作成または選択してください。';
+    return;
+  }
   favoriteBusy.value = true;
   favoriteMessage.value = '';
   try {
-    await axios.post('/api/favorites/', { symbol: target });
+    await addFavoriteStock(activeListId.value, target);
     await fetchFavorites();
   } catch (e) {
-    const status: number | undefined = (e as { response?: { status?: number } })?.response?.status;
-    favoriteMessage.value = favoriteErrorMessage(status);
+    const { status, detail } = apiError(e);
+    favoriteMessage.value = favoriteErrorMessage(status, detail);
   } finally {
     favoriteBusy.value = false;
   }
 }
 
-// お気に入り銘柄を削除する（DELETE /api/favorites/<symbol>/）
+// アクティブリストから銘柄を削除する（DELETE /api/favorites/<list_id>/<symbol>/）
+// 他のリストへの所属は影響を受けない。
 async function removeFavorite(target: string) {
-  if (favoriteBusy.value) return;
+  if (favoriteBusy.value || activeListId.value === null) return;
   favoriteBusy.value = true;
   favoriteMessage.value = '';
   try {
-    await axios.delete(`/api/favorites/${target}/`);
+    await removeFavoriteStock(activeListId.value, target);
     await fetchFavorites();
   } catch (e) {
     console.error('お気に入り削除エラー:', e);
+  } finally {
+    favoriteBusy.value = false;
+  }
+}
+
+// 新しいリストを作成する（POST /api/favorite-lists/）。作成後は自動で選択する。
+async function createList() {
+  if (favoriteBusy.value) return;
+  const input = window.prompt('新しいリスト名（50 字以内）:', '');
+  if (input === null) return; // キャンセル
+  const name = input.trim();
+  if (!isValidListName(name)) {
+    favoriteMessage.value = `無効なリスト名です（空以外・${LIST_NAME_MAX_LENGTH} 字以内）`;
+    return;
+  }
+  favoriteBusy.value = true;
+  favoriteMessage.value = '';
+  try {
+    const created = await createFavoriteList(name);
+    await fetchFavorites();
+    activeListId.value = created.id;
+  } catch (e) {
+    favoriteMessage.value = listErrorMessage(e);
+  } finally {
+    favoriteBusy.value = false;
+  }
+}
+
+// リスト名を変更する（PATCH /api/favorite-lists/<id>/）
+async function renameActiveList(listId: number) {
+  if (favoriteBusy.value) return;
+  const current = favoriteGroups.value.find((g) => g.id === listId);
+  if (current === undefined) return;
+  const input = window.prompt('リスト名を変更（50 字以内）:', current.name);
+  if (input === null) return; // キャンセル
+  const name = input.trim();
+  if (!isValidListName(name)) {
+    favoriteMessage.value = `無効なリスト名です（空以外・${LIST_NAME_MAX_LENGTH} 字以内）`;
+    return;
+  }
+  favoriteBusy.value = true;
+  favoriteMessage.value = '';
+  try {
+    await renameFavoriteList(listId, name);
+    await fetchFavorites();
+  } catch (e) {
+    favoriteMessage.value = listErrorMessage(e);
+  } finally {
+    favoriteBusy.value = false;
+  }
+}
+
+// リストを削除する（DELETE /api/favorite-lists/<id>/）。所属銘柄の行も一緒に削除される。
+async function deleteActiveList(listId: number) {
+  if (favoriteBusy.value) return;
+  const current = favoriteGroups.value.find((g) => g.id === listId);
+  if (current === undefined) return;
+  const ok = window.confirm(
+    `リスト「${current.name}」を削除します。このリストの${current.stocks.length}件の銘柄も削除されます。よろしいですか？`,
+  );
+  if (!ok) return;
+  favoriteBusy.value = true;
+  favoriteMessage.value = '';
+  try {
+    await deleteFavoriteList(listId);
+    await fetchFavorites();
+  } catch (e) {
+    favoriteMessage.value = listErrorMessage(e);
   } finally {
     favoriteBusy.value = false;
   }
