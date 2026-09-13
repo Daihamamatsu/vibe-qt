@@ -730,6 +730,41 @@ const chartOptions = computed<EChartsOption>(() => {
 
   // タートル表示ON時の追加系列
   if (on) {
+    // --- BUY/EXIT マーカー配置用の価格レンジ (Issue #46) ---
+    // y 軸の自動レンジはローソク足 + Donchian バンド (+ markLine 値) で決まるため、
+    // 同一データで算出し、マーカーがこの範囲内に収まるようにクランプする。
+    // そうすることで、マーカーの追加がチャートのスケールを変更しない。
+    let priceMin = Infinity;
+    let priceMax = -Infinity;
+    const widenRange = (v: number | null) => {
+      if (v === null || !Number.isFinite(v)) return;
+      if (v < priceMin) priceMin = v;
+      if (v > priceMax) priceMax = v;
+    };
+    for (const d of records) {
+      widenRange(Number(d.low ?? d.close));
+      widenRange(Number(d.high ?? d.close));
+    }
+    for (const r of rows) {
+      widenRange(r.donchianUpper);
+      widenRange(r.donchianLower);
+    }
+    // ピラミッド目標 / ストップの markLine はローソク足レンジの外側に伸び得る
+    if (tg) {
+      widenRange(tg.target1);
+      widenRange(tg.target2);
+      widenRange(tg.target3);
+      widenRange(tg.stop);
+    }
+    const priceSpan = priceMax - priceMin;
+    // グリッドの端でシンボルが切れないよう、上下 1% だけレンジ内側に収める
+    const EDGE_MARGIN = 0.01;
+    const clampPrice = (v: number) =>
+      Math.min(Math.max(v, priceMin + EDGE_MARGIN * priceSpan), priceMax - EDGE_MARGIN * priceSpan);
+    // ローソク足からの隙間: 当日 ATR の半分を優先、ATR 未算出時はレンジ幅の 2%
+    const signalGap = (atr: number | null) =>
+      atr !== null && atr > 0 ? Math.max(0.5 * atr, 0.005 * priceSpan) : 0.02 * priceSpan;
+
     series.push(
       {
         name: 'DC20 (エントリーライン)',
@@ -759,11 +794,16 @@ const chartOptions = computed<EChartsOption>(() => {
       },
       {
         // BUY マーカー: 終値がエントリーラインを上抜けした日（日本式: 赤）
+        // ローソク足の高値より上側に配置 (Issue #46)。レンジ外なら内側にクランプする
         name: 'BUY',
         type: 'scatter',
         xAxisIndex: 0,
         yAxisIndex: 0,
-        data: rows.map(r => (r.buy ? r.close : null)),
+        data: rows.map((r, i) => {
+          if (!r.buy) return null;
+          const high = Number(records[i].high ?? records[i].close);
+          return clampPrice(high + signalGap(r.atr));
+        }),
         symbol: 'triangle',
         symbolSize: 12,
         itemStyle: { color: '#e2534f' },
@@ -771,11 +811,16 @@ const chartOptions = computed<EChartsOption>(() => {
       },
       {
         // EXIT マーカー: 手仕舞いライン下抜けまたはトレーリングストップ到達の日（日本式: 緑）
+        // ローソク足の安値より下側に配置 (Issue #46)。レンジ外なら内側にクランプする
         name: 'EXIT',
         type: 'scatter',
         xAxisIndex: 0,
         yAxisIndex: 0,
-        data: rows.map(r => (r.exit ? r.close : null)),
+        data: rows.map((r, i) => {
+          if (!r.exit) return null;
+          const low = Number(records[i].low ?? records[i].close);
+          return clampPrice(low - signalGap(r.atr));
+        }),
         symbol: 'triangle',
         symbolRotate: 180, // 下向き三角形
         symbolSize: 12,
