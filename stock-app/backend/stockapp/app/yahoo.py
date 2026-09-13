@@ -39,11 +39,12 @@ def fetch_ohlcv(symbol: str, period: str = '1mo') -> list:
         StockFetchError — Yahoo Finance への通信に失敗したとき
         LookupError — 該当社種にデータがなかったとき
     """
-    import yfinance as yf  # 遅延 import（モジュール docstring 参照）
-
     try:
+        import yfinance as yf  # 遅延 import（モジュール docstring 参照）
         df = yf.Ticker(symbol).history(period=period, interval='1d', auto_adjust=False)
     except Exception as exc:
+        # yfinance 未導入（ModuleNotFoundError）も「Yahoo Finance への取得失敗」と扱う。
+        # try 外で import すると未導入環境で 500 になっていた (Issue #50 運用確認)
         raise StockFetchError(f'Yahoo Finance の取得に失敗しました: {exc}') from exc
 
     if df is None or df.empty:
