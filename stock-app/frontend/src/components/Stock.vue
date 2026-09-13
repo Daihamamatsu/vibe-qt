@@ -732,11 +732,11 @@ const chartOptions = computed<EChartsOption>(() => {
   // マーカーはローソク足の高値 / 安値から MARK_GAP_PX ピクセル上 / 下に配置する。
   // （三角形 symbolSize 12 の半高さ 6px に 4px の空きを確保）
   // y 軸 min/max 関数（下記）がデータ範囲の上下に PAD_TOP_PX / PAD_BOT_PX
-  // ピクセルの余白を常に確保するため、マーカー + 文字ラベルがグリッド端で
+  // ピクセルの余白を常に確保するため、マーカーがグリッド端で
   // 切れたりローソク足と重なったりしない。
   const PRICE_GRID_PX = 640 * 0.45; // 上段グリッド高さ（チャート 640px × 高さ 45%）
-  const PAD_TOP_PX = 20; // グリッド上部: BUY マーカー + 文字ラベル分の余白
-  const PAD_BOT_PX = 20; // グリッド下部: EXIT マーカー + 文字ラベル分の余白
+  const PAD_TOP_PX = 20; // グリッド上部: BUY マーカー (△) の表示余白
+  const PAD_BOT_PX = 20; // グリッド下部: EXIT マーカー (▽) の表示余白
   const MARK_GAP_PX = 10; // マーカー点とローソク足高値 / 安値の間隔 (px)
   const axisBound = (v: { min: number; max: number }, isMax: boolean): number => {
     const span = v.max - v.min;
@@ -820,7 +820,6 @@ const chartOptions = computed<EChartsOption>(() => {
         symbol: 'triangle',
         symbolSize: 12,
         itemStyle: { color: '#e2534f' },
-        label: { show: true, position: 'top', formatter: 'BUY', color: '#e2534f', fontSize: 10 },
       },
       {
         // EXIT マーカー: 手仕舞いライン下抜けまたはトレーリングストップ到達の日（日本式: 緑）
@@ -838,7 +837,6 @@ const chartOptions = computed<EChartsOption>(() => {
         symbolRotate: 180, // 下向き三角形
         symbolSize: 12,
         itemStyle: { color: '#3ba272' },
-        label: { show: true, position: 'bottom', formatter: 'EXIT', color: '#3ba272', fontSize: 10 },
       },
       {
         // N (ATR): True Range の単純移動平均（サブパネルに表示）
