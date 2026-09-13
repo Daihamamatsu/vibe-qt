@@ -169,15 +169,24 @@
           <input type="number" v-model.number="accountValue" min="0" style="width:9rem;" />
         </label>
         <label>ブレイク日:
-          <!-- BUY シグナル日のみ候補。選択で買値がその日終値へ自動設定される -->
-          <select v-model="turtleBreakoutDate" style="width:9.5rem;" @change="breakoutManual = true">
+          <!-- BUY シグナル日のみ候補。選択時、買値が空欄ならその日終値が自動設定される -->
+          <select v-model="turtleBreakoutDate" style="width:9.5rem;">
             <option v-for="d in buySignalDates" :key="d" :value="d">{{ d }}</option>
           </select>
         </label>
         <label>買値:
-          <!-- データ取得時に最新終値が自動設定される（手動入力後は上書きしない） -->
-          <input type="number" v-model.number="turtleBuyPrice" min="0" style="width:7rem;" @input="buyPriceManual = true" />
+          <!-- 保存状態のある銘柄は復元値、ない銘柄は空欄（自動設定なし） -->
+          <input type="number" v-model.number="turtleBuyPrice" min="0" style="width:7rem;" />
         </label>
+      </div>
+      <!-- 銘柄ごとの保存状態 (Issue #53) -->
+      <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;">
+        <span style="font-size:.85rem;" :style="hasSavedTurtleState ? { color: '#16a34a' } : { color: '#9ca3af' }">
+          {{ hasSavedTurtleState ? '● 状態: 保存済み' : '○ 状態: 未保存' }}
+        </span>
+        <button type="button" :disabled="!isValidSymbol(currentTurtleSymbol)" @click="saveCurrentTurtleState">状態を保存</button>
+        <button type="button" :disabled="!hasSavedTurtleState" @click="releaseCurrentTurtleState">状態を解除</button>
+        <span v-if="turtleStateMessage" style="font-size:.8rem;color:#6b7280;">{{ turtleStateMessage }}</span>
       </div>
       <table v-if="turtleEnabled && latestAtr !== null" class="turtle-table">
         <tbody>
@@ -187,7 +196,7 @@
           </tr>
           <tr>
             <th>1ユニット推奨株数<br /><small>floor(口座資金×0.01 ÷ N)</small></th>
-            <td>{{ unitShares }} 株</td>
+            <td>{{ accountValueNumber === null ? '—' : `${unitShares} 株` }}</td>
           </tr>
           <tr v-if="targets">
             <th>ピラミッド目標 / ストップ<br /><small>直近 N での再計算</small></th>
@@ -237,6 +246,15 @@ import { DISPLAY_PRESETS, chartTitle, getDisplayRange } from '../utils/display';
 // タートルズ型 (Donchian + ATR) 計算モジュール（ルックアヘッドなし: 前日までのデータのみ使用）
 import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
+// タートル戦略の銘柄ごとの保存状態（localStorage 永続化。Issue #53）
+import {
+  buildTurtleState,
+  clearTurtleState,
+  loadAllTurtleStates,
+  normalizeTurtleSymbol,
+  saveTurtleState,
+  type TurtleState,
+} from '../utils/turtleState';
 import {
   SYMBOL_PATTERN,
   LIST_NAME_MAX_LENGTH,
@@ -548,15 +566,16 @@ const fetching = ref(false);
 const yahooMessage = ref('');
 const yahooError = ref(false);
 
-// --- タートル戦略 (Donchian Channel + ATR) の状態 ---
+// --- タートル戦略 (Donchian Channel + ATR) の状態 (Issue #53: 既定値なし・保存状態のみ使用) ---
 const turtleEnabled = ref(true);
 const atrPeriod = ref(20); // N (ATR) の期間: 14 / 20
-const accountValue = ref(1000000); // 口座資金（ユーザー入力）
-const turtleBuyPrice = ref<number | null>(null); // 買値（既定: 最新終値を自動設定）
-const buyPriceManual = ref(false); // ユーザーが買値を手動設定したフラグ
-// ブレイク日 (BUY シグナル日。既定 = 最新 BUY 日。選択で買値がその日終値へ自動設定)
+const accountValue = ref<number | string | null>(null); // 口座資金（保存状態のない銘柄は空欄）
+const turtleBuyPrice = ref<number | string | null>(null); // 買値（保存状態のない銘柄は空欄）
+// ブレイク日 (BUY シグナル日。保存状態のない銘柄は空欄)
 const turtleBreakoutDate = ref<string | null>(null);
-const breakoutManual = ref(false); // ユーザーがブレイク日を手動選択したフラグ
+// --- タートル戦略の銘柄ごとの保存状態 (Issue #53) ---
+const turtleStates = ref<Record<string, TurtleState>>(loadAllTurtleStates());
+const turtleStateMessage = ref('');
 
 // Donchian バンド / ATR / BUY・EXIT シグナルの計算結果
 // （ルックアヘッド回避: バンドと判定は前日までのデータのみ参照）
@@ -572,9 +591,28 @@ const latestAtr = computed<number | null>(() => {
   }
   return null;
 });
+// 口座資金の数値形（未指定 / 数値でなければ null）
+const accountValueNumber = computed<number | null>(() => {
+  const v = accountValue.value;
+  if (v === null || v === '') return null;
+  const num = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(num) ? num : null;
+});
+// 買値の数値形（未指定 / 数値でなければ null）
+const turtleBuyPriceNumber = computed<number | null>(() => {
+  const v = turtleBuyPrice.value;
+  if (v === null || v === '') return null;
+  const num = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(num) ? num : null;
+});
+// 現在表示中のシンボル（大文字正規化済み）
+const currentTurtleSymbol = computed(() => normalizeTurtleSymbol(symbol.value));
+// 現在表示中の銘柄の保存済み状態（未保存なら undefined）
+const savedTurtleState = computed<TurtleState | undefined>(() => turtleStates.value[currentTurtleSymbol.value]);
+const hasSavedTurtleState = computed(() => savedTurtleState.value !== undefined);
 // ピラミッディング目標 (+0.5N / +1.0N / +1.5N) とストップロス (-2N)
 const targets = computed<PyramidTargets | null>(() => {
-  const price = turtleBuyPrice.value;
+  const price = turtleBuyPriceNumber.value;
   const atr = latestAtr.value;
   if (price === null || price <= 0 || atr === null || atr <= 0) return null;
   return computePyramidTargets(price, atr);
@@ -582,9 +620,10 @@ const targets = computed<PyramidTargets | null>(() => {
 // 1 ユニットの推奨購入株数: floor((口座資金 * 0.01) / N)
 // （株式は 1 ポイントあたり価値 = 1 固定のため買値は掛けない）
 const unitShares = computed<number>(() => {
+  const av = accountValueNumber.value;
   const atr = latestAtr.value;
-  if (atr === null || atr <= 0) return 0;
-  return computeUnitShares(accountValue.value, atr);
+  if (av === null || atr === null || atr <= 0) return 0;
+  return computeUnitShares(av, atr);
 });
 // ブレイク日の候補 (BUY シグナルが出た日付の昇順リスト)
 const buySignalDates = computed<string[]>(() =>
@@ -594,7 +633,7 @@ const buySignalDates = computed<string[]>(() =>
 // （毎日その日の N で目標・ストップを再計算。詳細は turtle.ts の computeTurtlePlan 参照）
 const turtlePlan = computed<TurtlePlan | null>(() => {
   const d = turtleBreakoutDate.value;
-  const price = turtleBuyPrice.value;
+  const price = turtleBuyPriceNumber.value;
   if (!d || price === null || price <= 0) return null;
   if (!buySignalDates.value.includes(d)) return null;
   return computeTurtlePlan(turtle.value, d, price);
@@ -613,12 +652,80 @@ function fmtPlanExit(plan: TurtlePlan): string {
       : 'DC10 下抜け (終値 < DC10)';
   return `${plan.exit.date} ${reason} (終値 ${fmtPrice(plan.exit.close)})`;
 }
-// ブレイク日選択で買値をその日終値へ自動設定（買値を手動設定済みなら上書きしない）
+// ブレイク日選択で買値が空欄のときはその日終値を自動設定（既に入力 / 復元済みの場合は上書きしない）
 watch(turtleBreakoutDate, (d) => {
-  if (d === null || buyPriceManual.value) return;
+  const bp = turtleBuyPrice.value;
+  if (d === null || (bp !== null && bp !== '')) return;
   const row = turtle.value.find(r => r.date === d);
   if (row) turtleBuyPrice.value = Number(row.close);
 });
+
+// =====================================================================
+// タートル戦略の銘柄ごとの保存状態 (Issue #53)
+// =====================================================================
+
+// 指定銘柄の保存状態を復元する（保存状態のない銘柄は全入力を空欄に戻す）
+function applyTurtleState(sym: string): void {
+  const st = turtleStates.value[normalizeTurtleSymbol(sym)];
+  if (st) {
+    accountValue.value = st.accountValue;
+    atrPeriod.value = st.atrPeriod;
+    turtleBreakoutDate.value = st.breakoutDate;
+    turtleBuyPrice.value = st.buyPrice;
+  } else {
+    accountValue.value = null;
+    atrPeriod.value = 20;
+    turtleBreakoutDate.value = null;
+    turtleBuyPrice.value = null;
+  }
+}
+
+// 現在の入力を現在の銘柄の保存状態として上書き保存する
+function saveCurrentTurtleState(): void {
+  turtleStateMessage.value = '';
+  const sym = currentTurtleSymbol.value;
+  if (!isValidSymbol(sym)) {
+    turtleStateMessage.value = '有効な銘柄を指定してください';
+    return;
+  }
+  const result = buildTurtleState({
+    accountValue: accountValue.value,
+    breakoutDate: turtleBreakoutDate.value,
+    buyPrice: turtleBuyPrice.value,
+    atrPeriod: atrPeriod.value,
+  });
+  if (!result.ok) {
+    turtleStateMessage.value = result.error;
+    return;
+  }
+  try {
+    saveTurtleState(sym, result.state);
+  } catch (e) {
+    console.error('タートル戦略状態の保存に失敗しました:', e);
+    turtleStateMessage.value = '状態の保存に失敗しました（ブラウザストレージエラー）';
+    return;
+  }
+  turtleStates.value = { ...turtleStates.value, [sym]: result.state };
+  turtleStateMessage.value = `${sym} の状態を保存しました`;
+}
+
+// 現在の銘柄の保存状態を削除し、入力を空欄に戻す
+function releaseCurrentTurtleState(): void {
+  turtleStateMessage.value = '';
+  const sym = currentTurtleSymbol.value;
+  try {
+    clearTurtleState(sym);
+  } catch (e) {
+    console.error('タートル戦略状態の削除に失敗しました:', e);
+    turtleStateMessage.value = '状態の削除に失敗しました（ブラウザストレージエラー）';
+    return;
+  }
+  const next = { ...turtleStates.value };
+  delete next[sym];
+  turtleStates.value = next;
+  applyTurtleState(sym); // 保存状態がなくなったため全入力を空欄に戻す
+  turtleStateMessage.value = `${sym} の状態を削除しました`;
+}
 
 // =====================================================================
 // 固定情報パネル（ホバー中のローソク足の正確な価格・出来高を表示）
@@ -1106,17 +1213,6 @@ async function fetchStockData() {
     // 日付昇順（古い順）でチャートに表示する
     const records = (res.data as StockRecord[]).sort((a, b) => a.date.localeCompare(b.date));
     data.value = records;
-    // 買値は既定で最新終値を設定（ユーザーが手動設定した場合は上書きしない）
-    if (records.length > 0 && !buyPriceManual.value) {
-      turtleBuyPrice.value = Number(records[records.length - 1].close);
-    }
-    // ブレイク日は既定で最新の BUY シグナル日を設定（手動選択済みの場合は上書きしない）
-    if (!breakoutManual.value) {
-      const rows = computeTurtle(records, { atrPeriod: atrPeriod.value });
-      let latest = '';
-      for (const r of rows) if (r.buy) latest = r.date;
-      turtleBreakoutDate.value = latest || null;
-    }
   } catch (e) {
     console.error('データ取得エラー:', e);
   }
@@ -1330,11 +1426,8 @@ watch(symbol, () => {
   movingAverage.value = null;
   yahooMessage.value = '';
   yahooError.value = false;
-  // タートル戦略の状態をリセット（買値・ブレイク日は次回取得時に自動設定される）
-  turtleBuyPrice.value = null;
-  buyPriceManual.value = false;
-  turtleBreakoutDate.value = null;
-  breakoutManual.value = false;
+  // タートル戦略の状態を新銘柄の保存状態へ復元 (Issue #53)（未保存なら全入力空欄）
+  applyTurtleState(symbol.value);
   // 銘柄名をリセットしてデバウンス取得 (Issue #49)
   stockName.value = '';
   if (metaTimer !== null) clearTimeout(metaTimer);
@@ -1369,7 +1462,9 @@ watch([displayPeriod, displayCount], () => {
 });
 
 // 初期表示でお気に入り一覧を読み込む (Issue #50)
+// および初期銘柄のタートル戦略保存状態を復元 (Issue #53)
 onMounted(() => {
+  applyTurtleState(symbol.value);
   void fetchFavorites();
 });
 </script>
