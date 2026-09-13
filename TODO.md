@@ -51,3 +51,13 @@
 - [x] `npm test`（29 件パス）/ `npm run typecheck` / `npm run build` を実行
 - [x] `docs/turtle-strategy.md` と `README.md` を更新
 
+## Issue #46 BUY/EXIT シグナルマーカーをローソク足と重ならない位置に表示
+
+- [x] BUY マーカーをローソク足の高値より上側に配置（従来は終値でローソク足と重なっていた）
+- [x] EXIT マーカーをローソク足の安値より下側に配置（従来は終値でローソク足と重なっていた）
+- [x] ローソク足からの隙間を当日 ATR の半分に（ATR 未算出時はレンジ幅の 2% にフォールバック）
+- [x] チャート表示エリア（y 軸自動レンジ）の上下限を超えそうな場合はレンジ内にクランプ（ローソク足との重なりを許容）
+- [x] マーカーが既存の軸スケールを変えないこと（ローソク足 + Donchian バンド + markLine 値で構成されるレンジ内に収める）
+- [x] `npm test`（29 件パス）/ `npm run typecheck` / `npm run build` を実行
+- [x] `docs/turtle-strategy.md` と `README.md` を更新
+

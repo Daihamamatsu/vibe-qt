@@ -226,3 +226,13 @@ docker compose -f stock-app/docker-compose.yml exec db sqlite3 /data/db/stock.db
   - 情報パネルの表に**買い増し計画 (P2/P3/P4)**（到達日・目標価格・到達日終値）と **EXIT 計画**（到達日・理由・終値）を追加表示
   - チャートに買い増し（◇ 紫）/ 計画 EXIT（■ 緑）のマーカーを追加（既存の指標 BUY/EXIT マーカーとは別物として表示）
 - `turtle.test.ts` に `computeTurtlePlan` のケースを追加（同日複数買い増し / ストップ EXIT / DC10 EXIT / ブレイク日欠落・買値不正 / ATR 不足）。ユニットテスト計 29 件で検証、`npm run typecheck` / `npm run build` はパス
+
+## 備考（Issue #46: BUY/EXIT シグナルマーカーをローソク足と重ならない位置に表示）
+
+- チャートの BUY / EXIT シグナルマーカーをローソク足と重ならない位置に変更（従来は終値に配置しておりローソク足と重なって見づらかったため）
+  - **BUY**: 当日ローソク足の高値より**上側**に配置
+  - **EXIT**: 当日ローソク足の安値より**下側**に配置
+- ローソク足からの隙間は**当日 ATR の半分**を優先（ATR 未算出時はレンジ幅の 2%）
+- チャート表示エリア（y 軸自動レンジ: ローソク足 + Donchian バンド + markLine 値）の上下限を超えそうな場合はレンジ内にクランプし、ローソク足との重なりを許容
+- `Stock.vue` の `chartOptions` 内の BUY/EXIT scatter のみ変更（`turtle.ts` の計算ロジックは変更なし、買い増し / 計画 EXIT マーカー（Issue #44）は対象外）
+- `npm test`（29 件パス）/ `npm run typecheck` / `npm run build` で検証
