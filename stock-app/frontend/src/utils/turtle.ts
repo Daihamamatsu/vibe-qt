@@ -126,22 +126,18 @@ export function computeTurtle(bars: Bar[], params: TurtleParams = {}): TurtleBar
 
 /**
  * 1 ユニットの推奨購入株数。
- * 計算式: floor((口座資金 * 0.01) / (N * 1株あたりの価値))
+ * 計算式: floor(口座資金 * 0.01 / N)
+ * 株式は 1 ポイントあたり価値 = 1 固定のため、買値を掛けない。
  */
-export function computeUnitShares(
-  accountValue: number,
-  atrN: number,
-  shareValue: number,
-): number {
+export function computeUnitShares(accountValue: number, atrN: number): number {
   if (
     !Number.isFinite(accountValue) ||
     !Number.isFinite(atrN) ||
-    !Number.isFinite(shareValue) ||
-    accountValue <= 0 || atrN <= 0 || shareValue <= 0
+    accountValue <= 0 || atrN <= 0
   ) {
     return 0;
   }
-  return Math.floor((accountValue * 0.01) / (atrN * shareValue));
+  return Math.floor((accountValue * 0.01) / atrN);
 }
 
 export interface PyramidTargets {
@@ -163,4 +159,113 @@ export function computePyramidTargets(sharePrice: number, atrN: number): Pyramid
     target3: sharePrice + 1.5 * atrN,
     stop: sharePrice - 2.0 * atrN,
   };
+}
+
+// --- ブレイク日基準の機械的計画 (買い増し / EXIT シミュレーション) ---
+
+/** 買い増しレベル (P2/P3/P4): 目標 = 買値 + mult × N (毎日その日の N で再計算) */
+export interface TurtlePlanLevel {
+  /** ピラミッド段数 (2 = +0.5N / 3 = +1.0N / 4 = +1.5N) */
+  level: 2 | 3 | 4;
+  /** 倍率 (0.5 / 1.0 / 1.5) */
+  mult: number;
+  /** 到達日 (null = 未到達) */
+  date: string | null;
+  /** 到達日時点の目標価格 (買値 + mult × 当日の N) */
+  price: number | null;
+  /** 到達日の終値 */
+  hitClose: number | null;
+}
+
+/** EXIT 計画の結果 */
+export interface TurtlePlanExit {
+  /** EXIT 日 (null = 未発生) */
+  date: string | null;
+  /** EXIT 日終値 */
+  close: number | null;
+  /** EXIT 理由: 'stop' = 終値 ≤ 買値−2N / 'dc10' = 終値 < DC10 */
+  reason: 'stop' | 'dc10' | null;
+}
+
+/** 直近日時点での再計算結果 (当日の N 基準) */
+export interface TurtlePlanLatest {
+  date: string;
+  /** 当日の N (ATR) */
+  n: number;
+  target1: number;
+  target2: number;
+  target3: number;
+  stop: number;
+  /** 当日の DC10 (データ不足時は null) */
+  dc10: number | null;
+}
+
+export interface TurtlePlan {
+  levels: TurtlePlanLevel[];
+  exit: TurtlePlanExit;
+  /** 直近日時点での再計算結果 (N が揃わない日は null) */
+  latest: TurtlePlanLatest | null;
+}
+
+/**
+ * ブレイク日 (BUY シグナル日) 以降の買い増し (P2/P3/P4) と EXIT を機械的にシミュレートする。
+ *
+ * - 各日その日の N(ATR) で目標・ストップを再計算:
+ *   目標 = 買値 + {0.5, 1.0, 1.5} × N / ストップ = 買値 − 2 × N
+ * - 買い増し: 終値が (>=) その日の目標に到達した日に P2/P3/P4 を記録
+ *   (同日に複数レベル到達を許容)
+ * - EXIT: 終値 ≤ ストップ または 終値 < DC10 の初回到達日で計画終了
+ *   (同日に両方に該当する場合は 'stop' を優先)
+ *
+ * ブレイク日が存在しない・買値が無効な場合は null を返す。
+ */
+export function computeTurtlePlan(
+  rows: TurtleBar[],
+  breakoutDate: string,
+  buyPrice: number,
+): TurtlePlan | null {
+  if (!Number.isFinite(buyPrice) || buyPrice <= 0) return null;
+  const start = rows.findIndex(r => r.date === breakoutDate);
+  if (start < 0) return null;
+
+  const levels: TurtlePlanLevel[] = [
+    { level: 2, mult: 0.5, date: null, price: null, hitClose: null },
+    { level: 3, mult: 1.0, date: null, price: null, hitClose: null },
+    { level: 4, mult: 1.5, date: null, price: null, hitClose: null },
+  ];
+  const exit: TurtlePlanExit = { date: null, close: null, reason: null };
+  let latest: TurtlePlanLatest | null = null;
+
+  for (let i = start; i < rows.length; i++) {
+    const row = rows[i];
+    const n = row.atr;
+    if (n === null) continue; // N データ不足: その日は再計算しない
+    latest = {
+      date: row.date,
+      n,
+      target1: buyPrice + 0.5 * n,
+      target2: buyPrice + 1.0 * n,
+      target3: buyPrice + 1.5 * n,
+      stop: buyPrice - 2 * n,
+      dc10: row.donchianLower,
+    };
+    // 買い増し: 終値がその日の目標に到達した日 (同日複数レベル到達を許容)
+    for (const lv of levels) {
+      if (lv.date === null && row.close >= buyPrice + lv.mult * n) {
+        lv.date = row.date;
+        lv.price = buyPrice + lv.mult * n;
+        lv.hitClose = row.close;
+      }
+    }
+    // EXIT: ストップロス または DC10 下抜け (初回到達で計画終了)
+    const stopHit = row.close <= latest.stop;
+    const dc10Hit = latest.dc10 !== null && row.close < latest.dc10;
+    if (stopHit || dc10Hit) {
+      exit.date = row.date;
+      exit.close = row.close;
+      exit.reason = stopHit ? 'stop' : 'dc10';
+      break;
+    }
+  }
+  return { levels, exit, latest };
 }

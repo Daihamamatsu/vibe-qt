@@ -10,6 +10,7 @@ import {
   type Bar,
   computePyramidTargets,
   computeTurtle,
+  computeTurtlePlan,
   computeUnitShares,
 } from './turtle';
 
@@ -137,17 +138,17 @@ describe('computeTurtle: トレーリングストップ（直近10日高値 - 2*
 });
 
 describe('computeUnitShares', () => {
-  it('floor((口座資金 * 0.01) / (N * 1株あたりの価値)) を計算する', () => {
-    expect(computeUnitShares(1_000_000, 2, 50)).toBe(100);
-    // 小数は切り捨て（10000 / 21 = 476.19... → 476）
-    expect(computeUnitShares(1_000_000, 3, 7)).toBe(476);
+  it('floor(口座資金 * 0.01 / N) を計算する (買値は掛けない)', () => {
+    expect(computeUnitShares(1_000_000, 2)).toBe(5000);
+    // 小数は切り捨て (10000 / 7 = 1428.57... → 1428)
+    expect(computeUnitShares(1_000_000, 7)).toBe(1428);
   });
 
-  it('不正な入力（ゼロ / 負 / NaN）は 0 を返す', () => {
-    expect(computeUnitShares(0, 2, 50)).toBe(0);
-    expect(computeUnitShares(1_000_000, 0, 50)).toBe(0);
-    expect(computeUnitShares(1_000_000, 2, -1)).toBe(0);
-    expect(computeUnitShares(Number.NaN, 2, 50)).toBe(0);
+  it('不正な入力 (ゼロ / 負 / NaN) は 0 を返す', () => {
+    expect(computeUnitShares(0, 2)).toBe(0);
+    expect(computeUnitShares(1_000_000, 0)).toBe(0);
+    expect(computeUnitShares(1_000_000, -2)).toBe(0);
+    expect(computeUnitShares(Number.NaN, 2)).toBe(0);
   });
 });
 
@@ -159,6 +160,97 @@ describe('computePyramidTargets', () => {
       target3: 103,
       stop: 96,
     });
+  });
+});
+
+describe('computeTurtlePlan: 買い増し / EXIT の機械的シミュレーション', () => {
+  // ブレイク日は i=3 (BUY: DC2 = max(h1,h2) = 13 < 終値 14)。
+  // entryDays=2, exitDays=2, atrPeriod=2 で ATR は i>=1 から有効 (i=3 で 2.5)。
+  const RISING: Bar[] = [
+    makeBar(0, 10, 12, 10, 11),
+    makeBar(1, 10, 12, 10, 11),
+    makeBar(2, 11, 13, 11, 12),
+    makeBar(3, 12, 15, 12, 14),
+    makeBar(4, 14, 16, 14, 15), // 終値 15 < 目標 15.25 → 到達しない
+    makeBar(5, 15, 18, 15, 17), // 終値 17 ≥ 15.25 (P2) かつ ≥ 16.5 (P3)
+  ];
+  // 下落: i=5 で N = 1.5, ストップ = 14 - 2*1.5 = 11, 終値 11 ≤ 11 → ストップ
+  // (DC10 = min(l0..l4) = 10 ではないため理由は 'stop')
+  const FALLING: Bar[] = [
+    makeBar(0, 10, 12, 10, 11),
+    makeBar(1, 10, 12, 10, 11),
+    makeBar(2, 11, 13, 11, 12),
+    makeBar(3, 12, 15, 12, 14),
+    makeBar(4, 13, 14, 12, 12),
+    makeBar(5, 11, 12, 11, 11),
+  ];
+  // 急落: i=5 で TR = 6 → N = (2+6)/2 = 4, ストップ = 14 - 8 = 6 (到達せず)。
+  // DC10 = min(l3,l4) = 12, 終値 10.5 < 12 → DC10 下抜けで EXIT
+  const DC10_DROP: Bar[] = [
+    makeBar(0, 10, 12, 10, 11),
+    makeBar(1, 10, 12, 10, 11),
+    makeBar(2, 11, 13, 11, 12),
+    makeBar(3, 12, 15, 12, 14),
+    makeBar(4, 14, 16, 14, 15),
+    makeBar(5, 10, 16, 10, 10.5),
+  ];
+
+  it('同日に複数の買い増し到達を許容する (P2/P3 到達、P4 未到達、EXIT なし)', () => {
+    const rows = computeTurtle(RISING, { entryDays: 2, exitDays: 2, atrPeriod: 2 });
+    expect(rows[3].buy).toBe(true);
+    const plan = computeTurtlePlan(rows, rows[3].date, rows[3].close);
+    expect(plan).not.toBeNull();
+    const [p2, p3, p4] = plan!.levels;
+    // N = 2.5 → P2 = 15.25, P3 = 16.5, P4 = 17.75 (終値 17: P2/P3 到達、P4 未到達)
+    expect(p2).toMatchObject({ level: 2, date: rows[5].date, price: 15.25, hitClose: 17 });
+    expect(p3).toMatchObject({ level: 3, date: rows[5].date, price: 16.5, hitClose: 17 });
+    expect(p4).toMatchObject({ level: 4, date: null, price: null, hitClose: null });
+    expect(plan!.exit).toEqual({ date: null, close: null, reason: null });
+    // 直近日 (i=5) の再計算値
+    expect(plan!.latest).toEqual({
+      date: rows[5].date,
+      n: 2.5,
+      target1: 15.25,
+      target2: 16.5,
+      target3: 17.75,
+      stop: 9,
+      dc10: 12,
+    });
+  });
+
+  it('終値 ≤ 買値 − 2N の初回到達日でストップロス EXIT', () => {
+    const rows = computeTurtle(FALLING, { entryDays: 2, exitDays: 5, atrPeriod: 2 });
+    expect(rows[3].buy).toBe(true);
+    const plan = computeTurtlePlan(rows, rows[3].date, rows[3].close);
+    // i=5: N = 1.5 → ストップ = 11, 終値 11 ≤ 11 (DC10 = 10 は上回るため 'stop')
+    expect(plan!.exit).toEqual({ date: rows[5].date, close: 11, reason: 'stop' });
+    // 目標到達前に EXIT したため買い増しは未到達
+    expect(plan!.levels.every(l => l.date === null)).toBe(true);
+  });
+
+  it('終値 < DC10 の初回到達日で DC10 下抜け EXIT (ストップより上の場合)', () => {
+    const rows = computeTurtle(DC10_DROP, { entryDays: 2, exitDays: 2, atrPeriod: 2 });
+    const plan = computeTurtlePlan(rows, rows[3].date, rows[3].close);
+    // i=5: N = 4 → ストップ = 6 (終値 10.5 は超過)、DC10 = 12 (終値 10.5 < 12 → 'dc10')
+    expect(plan!.exit).toEqual({ date: rows[5].date, close: 10.5, reason: 'dc10' });
+    expect(plan!.levels.every(l => l.date === null)).toBe(true);
+  });
+
+  it('ブレイク日が存在しない・買値が無効な場合は null を返す', () => {
+    const rows = computeTurtle(RISING, { entryDays: 2, exitDays: 2, atrPeriod: 2 });
+    expect(computeTurtlePlan(rows, '2099-01-01', 14)).toBeNull();
+    expect(computeTurtlePlan(rows, rows[3].date, 0)).toBeNull();
+    expect(computeTurtlePlan(rows, rows[3].date, Number.NaN)).toBeNull();
+  });
+
+  it('ATR が揃わないデータでも安全に空の計画を返す (latest = null)', () => {
+    // entryDays=20 より短い 5 本 → 全日 ATR / バンド null
+    const rows = computeTurtle(makeRisingBars(5));
+    const plan = computeTurtlePlan(rows, rows[0].date, 1);
+    expect(plan).not.toBeNull();
+    expect(plan!.latest).toBeNull();
+    expect(plan!.levels.every(l => l.date === null)).toBe(true);
+    expect(plan!.exit.date).toBeNull();
   });
 });
 

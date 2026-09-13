@@ -122,6 +122,12 @@
         <label>口座資金:
           <input type="number" v-model.number="accountValue" min="0" style="width:9rem;" />
         </label>
+        <label>ブレイク日:
+          <!-- BUY シグナル日のみ候補。選択で買値がその日終値へ自動設定される -->
+          <select v-model="turtleBreakoutDate" style="width:9.5rem;" @change="breakoutManual = true">
+            <option v-for="d in buySignalDates" :key="d" :value="d">{{ d }}</option>
+          </select>
+        </label>
         <label>買値:
           <!-- データ取得時に最新終値が自動設定される（手動入力後は上書きしない） -->
           <input type="number" v-model.number="turtleBuyPrice" min="0" style="width:7rem;" @input="buyPriceManual = true" />
@@ -134,20 +140,35 @@
             <td>{{ latestAtr.toFixed(2) }}</td>
           </tr>
           <tr>
-            <th>1ユニット推奨株数<br /><small>floor((口座資金×0.01) ÷ (N×買値))</small></th>
+            <th>1ユニット推奨株数<br /><small>floor(口座資金×0.01 ÷ N)</small></th>
             <td>{{ unitShares }} 株</td>
           </tr>
           <tr v-if="targets">
-            <th>ピラミッド目標 / ストップ</th>
+            <th>ピラミッド目標 / ストップ<br /><small>直近 N での再計算</small></th>
             <td>
               +0.5N: {{ targets.target1.toFixed(2) }} ／ +1.0N: {{ targets.target2.toFixed(2) }} ／
               +1.5N: {{ targets.target3.toFixed(2) }} ／ ストップ(-2N): {{ targets.stop.toFixed(2) }}
             </td>
           </tr>
+          <tr v-if="turtlePlan">
+            <th>買い増し計画 (P2/P3/P4)<br /><small>毎日 買値 + {0.5, 1.0, 1.5} × N で再計算</small></th>
+            <td>
+              +0.5N: {{ fmtPlanLevel(turtlePlan.levels[0]) }}<br />
+              +1.0N: {{ fmtPlanLevel(turtlePlan.levels[1]) }}<br />
+              +1.5N: {{ fmtPlanLevel(turtlePlan.levels[2]) }}
+            </td>
+          </tr>
+          <tr v-if="turtlePlan">
+            <th>EXIT 計画<br /><small>終値 ≤ 買値−2N または 終値 &lt; DC10</small></th>
+            <td>{{ fmtPlanExit(turtlePlan) }}</td>
+          </tr>
         </tbody>
       </table>
       <p v-else-if="turtleEnabled && data.length > 0" class="turtle-hint">
         ATR を計算するには {{ atrPeriod }} 日以上のデータが必要です
+      </p>
+      <p v-if="turtleEnabled && latestAtr !== null && !turtlePlan" class="turtle-hint">
+        買い増し / EXIT 計画を表示するにはブレイク日 (BUY シグナル日) を指定してください
       </p>
     </div>
   </div>
@@ -168,8 +189,8 @@ import { TooltipComponent, GridComponent, DataZoomComponent } from 'echarts/comp
 // 表示ウィンドウ（表示期間 / ローソク足本数）計算モジュール
 import { DISPLAY_PRESETS, getDisplayRange } from '../utils/display';
 // タートルズ型 (Donchian + ATR) 計算モジュール（ルックアヘッドなし: 前日までのデータのみ使用）
-import { computePyramidTargets, computeTurtle, computeUnitShares } from '../utils/turtle';
-import type { PyramidTargets, TurtleBar } from '../utils/turtle';
+import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitShares } from '../utils/turtle';
+import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
 
 use([CanvasRenderer, CandlestickChart, BarChart, LineChart, ScatterChart, TooltipComponent, GridComponent, DataZoomComponent]);
 
@@ -446,6 +467,9 @@ const atrPeriod = ref(20); // N (ATR) の期間: 14 / 20
 const accountValue = ref(1000000); // 口座資金（ユーザー入力）
 const turtleBuyPrice = ref<number | null>(null); // 買値（既定: 最新終値を自動設定）
 const buyPriceManual = ref(false); // ユーザーが買値を手動設定したフラグ
+// ブレイク日 (BUY シグナル日。既定 = 最新 BUY 日。選択で買値がその日終値へ自動設定)
+const turtleBreakoutDate = ref<string | null>(null);
+const breakoutManual = ref(false); // ユーザーがブレイク日を手動選択したフラグ
 
 // Donchian バンド / ATR / BUY・EXIT シグナルの計算結果
 // （ルックアヘッド回避: バンドと判定は前日までのデータのみ参照）
@@ -468,12 +492,45 @@ const targets = computed<PyramidTargets | null>(() => {
   if (price === null || price <= 0 || atr === null || atr <= 0) return null;
   return computePyramidTargets(price, atr);
 });
-// 1 ユニットの推奨購入株数: floor((口座資金 * 0.01) / (N * 1株あたりの価値))
+// 1 ユニットの推奨購入株数: floor((口座資金 * 0.01) / N)
+// （株式は 1 ポイントあたり価値 = 1 固定のため買値は掛けない）
 const unitShares = computed<number>(() => {
-  const price = turtleBuyPrice.value;
   const atr = latestAtr.value;
-  if (price === null || atr === null) return 0;
-  return computeUnitShares(accountValue.value, atr, price);
+  if (atr === null || atr <= 0) return 0;
+  return computeUnitShares(accountValue.value, atr);
+});
+// ブレイク日の候補 (BUY シグナルが出た日付の昇順リスト)
+const buySignalDates = computed<string[]>(() =>
+  turtle.value.filter(r => r.buy).map(r => r.date),
+);
+// タートル計画: ブレイク日以降の買い増し (P2/P3/P4) と EXIT を機械的にシミュレートする
+// （毎日その日の N で目標・ストップを再計算。詳細は turtle.ts の computeTurtlePlan 参照）
+const turtlePlan = computed<TurtlePlan | null>(() => {
+  const d = turtleBreakoutDate.value;
+  const price = turtleBuyPrice.value;
+  if (!d || price === null || price <= 0) return null;
+  if (!buySignalDates.value.includes(d)) return null;
+  return computeTurtlePlan(turtle.value, d, price);
+});
+// 買い増し計画の行表示 (到達: 日付・目標・終値 / 未到達: 「未到達」)
+function fmtPlanLevel(lv: TurtlePlanLevel): string {
+  if (lv.date === null) return '未到達';
+  return `${lv.date} (目標 ${fmtPrice(lv.price)} / 終値 ${fmtPrice(lv.hitClose)})`;
+}
+// EXIT 計画の行表示 (到達: 日付・理由・終値 / 未到達: 「未到達」)
+function fmtPlanExit(plan: TurtlePlan): string {
+  if (plan.exit.date === null) return '未到達';
+  const reason =
+    plan.exit.reason === 'stop'
+      ? 'ストップロス (終値 ≤ 買値−2N)'
+      : 'DC10 下抜け (終値 < DC10)';
+  return `${plan.exit.date} ${reason} (終値 ${fmtPrice(plan.exit.close)})`;
+}
+// ブレイク日選択で買値をその日終値へ自動設定（買値を手動設定済みなら上書きしない）
+watch(turtleBreakoutDate, (d) => {
+  if (d === null || buyPriceManual.value) return;
+  const row = turtle.value.find(r => r.date === d);
+  if (row) turtleBuyPrice.value = Number(row.close);
 });
 
 // =====================================================================
@@ -739,6 +796,62 @@ const chartOptions = computed<EChartsOption>(() => {
         itemStyle: { color: '#8e44ad' },
       },
     );
+
+    // 買い増し計画 (P2/P3/P4) と計画 EXIT のマーカー (Issue #44)。
+    // 指標シグナル (BUY/EXIT マーカー) とは別物で、計画上の到達日を示す。
+    const plan = turtlePlan.value;
+    if (plan) {
+      const buyAdds = plan.levels.filter(
+        (lv): lv is TurtlePlanLevel & { date: string; hitClose: number } =>
+          lv.date !== null && lv.hitClose !== null,
+      );
+      if (buyAdds.length > 0) {
+        series.push({
+          // 買い増し: 終値が 買値 + {0.5, 1.0, 1.5} × N (当日 N で再計算) に到達した日
+          name: '買い増し 2/3/4',
+          type: 'scatter',
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          symbol: 'diamond',
+          symbolSize: 10,
+          itemStyle: { color: '#9c36b5' },
+          data: buyAdds.map(lv => ({
+            value: [lv.date, lv.hitClose],
+            label: {
+              show: true,
+              position: 'top',
+              formatter: `買い増し${lv.level}`,
+              color: '#9c36b5',
+              fontSize: 10,
+            },
+          })),
+        });
+      }
+      if (plan.exit.date !== null && plan.exit.close !== null) {
+        series.push({
+          // 計画 EXIT: 終値 ≤ 買値−2N (ストップ) または 終値 < DC10 の初回到達日
+          name: '計画 EXIT',
+          type: 'scatter',
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          symbol: 'rect',
+          symbolSize: 9,
+          itemStyle: { color: '#3ba272' },
+          data: [
+            {
+              value: [plan.exit.date, plan.exit.close],
+              label: {
+                show: true,
+                position: 'bottom',
+                formatter: '計画 EXIT',
+                color: '#3ba272',
+                fontSize: 10,
+              },
+            },
+          ],
+        });
+      }
+    }
   }
 
   return {
@@ -839,6 +952,13 @@ async function fetchStockData() {
     if (records.length > 0 && !buyPriceManual.value) {
       turtleBuyPrice.value = Number(records[records.length - 1].close);
     }
+    // ブレイク日は既定で最新の BUY シグナル日を設定（手動選択済みの場合は上書きしない）
+    if (!breakoutManual.value) {
+      const rows = computeTurtle(records, { atrPeriod: atrPeriod.value });
+      let latest = '';
+      for (const r of rows) if (r.buy) latest = r.date;
+      turtleBreakoutDate.value = latest || null;
+    }
   } catch (e) {
     console.error('データ取得エラー:', e);
   }
@@ -881,9 +1001,11 @@ watch(symbol, () => {
   movingAverage.value = null;
   yahooMessage.value = '';
   yahooError.value = false;
-  // タートル戦略の状態をリセット（買値は次回取得時に最新終値へ自動設定される）
+  // タートル戦略の状態をリセット（買値・ブレイク日は次回取得時に自動設定される）
   turtleBuyPrice.value = null;
   buyPriceManual.value = false;
+  turtleBreakoutDate.value = null;
+  breakoutManual.value = false;
 });
 
 // 表示ウィンドウ（表示期間 / 本数 = 直近 N 本）を表示範囲に適用する (Issue #36)。
