@@ -30,3 +30,15 @@ class StockMeta(models.Model):
     symbol = models.CharField(max_length=10, unique=True)
     name = models.CharField(max_length=200, blank=True, default='')
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class FavoriteStock(models.Model):
+    """お気に入り銘柄（Issue #50）。
+
+    銘柄名は StockMeta と同期する（yahoo.upsert_stock_meta が
+    StockMeta 更新時に同じくこの行の name を更新する）。
+    """
+
+    symbol = models.CharField(max_length=10, unique=True)
+    name = models.CharField(max_length=200, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)

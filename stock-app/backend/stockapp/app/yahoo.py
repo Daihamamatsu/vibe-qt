@@ -90,6 +90,20 @@ def fetch_stock_name(symbol: str) -> str:
     return str(name).strip()
 
 
+def upsert_stock_meta(symbol: str, name: str) -> None:
+    """銘柄名を StockMeta に保存し、お気に入り銘柄へも同期する (Issue #49, #50)。
+
+    StockMeta の行は無いなら作成・あれば name を更新し、同じシンボルの
+    FavoriteStock 行の name も常に StockMeta 側に合わせる（空文字の場合も
+    含めて全面同期）。これによりお気に入りパネルは常に最新の銘柄名を
+    表示できる。
+    """
+    from .models import FavoriteStock, StockMeta
+
+    StockMeta.objects.update_or_create(symbol=symbol, defaults={'name': name})
+    FavoriteStock.objects.filter(symbol=symbol).update(name=name)
+
+
 def fetch_and_save(symbol: str, period: str = '1mo') -> dict:
     """Yahoo Finance から日足 OHLC を取得して DB に upsert する。
 
@@ -124,11 +138,9 @@ def fetch_and_save(symbol: str, period: str = '1mo') -> dict:
     if to_create:
         StockRecord.objects.bulk_create(to_create)
 
-    # 銘柄名を取得してキャッシュ（best effort: 銘柄名取得の失敗が株価保存を妨げない）(Issue #49)
-    StockMeta.objects.update_or_create(
-        symbol=symbol,
-        defaults={'name': fetch_stock_name(symbol)},
-    )
+    # 銘柄名を取得してキャッシュ（best effort: 銘柄名取得の失敗が株価保存を妨げない）(Issue #49, #50)
+    # upsert_stock_meta によりお気に入り銘柄の name も StockMeta と同期される
+    upsert_stock_meta(symbol, fetch_stock_name(symbol))
 
     return {
         'symbol': symbol,

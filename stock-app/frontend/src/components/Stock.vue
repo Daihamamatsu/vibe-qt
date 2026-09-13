@@ -8,6 +8,13 @@
         <input v-model="symbol" placeholder="例：AAPL" />
         <!-- 銘柄名（Yahoo Finance 取得、Issue #49）: 取得不能時は非表示 -->
         <span v-if="stockName" style="color:#555;">{{ stockName }}</span>
+        <!-- お気に入り切替 (Issue #50): 現在入力のシンボルを追加/削除 -->
+        <button
+          :disabled="favoriteBusy"
+          :title="isFavorite ? 'お気に入りから削除' : 'お気に入りに追加'"
+          :style="{ fontSize: '1.2rem', padding: '0.2rem 0.5rem', cursor: favoriteBusy ? 'wait' : 'pointer' }"
+          @click="isFavorite ? removeFavorite(symbol.trim().toUpperCase()) : addFavorite()"
+        >{{ isFavorite ? '★' : '☆' }}</button>
         <label>期間:</label>
         <select v-model="period">
           <option value="5d">5d</option>
@@ -32,6 +39,19 @@
       <p v-if="yahooMessage" :style="{ marginTop: '.5rem', marginBottom: 0, color: yahooError ? '#c0392b' : '#2c7a2c' }">
         {{ yahooMessage }}
       </p>
+      <!-- お気に入り銘柄リスト (Issue #50): シンボルクリックでその銘柄へ切替 -->
+      <div style="margin-top:.5rem;">
+        <p style="margin:0 0 .25rem;font-weight:bold;">★ お気に入り（{{ favorites.length }}/10）</p>
+        <ul style="margin:0;padding:0;">
+          <li v-for="f in favorites" :key="f.symbol" style="margin:.15rem 0;">
+            <a href="#" :style="{ color:'#1a73e8' }" @click.prevent="symbol = f.symbol">{{ f.symbol }}</a>
+            <span v-if="f.name" style="color:#555;">{{ f.name }}</span>
+            <button :disabled="favoriteBusy" style="margin-left:.5rem;" title="お気に入りから削除" @click="removeFavorite(f.symbol)">✕</button>
+          </li>
+          <li v-if="favorites.length === 0" style="color:#888;">お気に入りはありません</li>
+        </ul>
+        <p v-if="favoriteMessage" style="margin:.25rem 0 0;color:#c0392b;">{{ favoriteMessage }}</p>
+      </div>
     </div>
 
     <!-- チャート表示（日足ローソク足 + 出来高バー + タートル ATR サブパネル + 下部ズームスライダー） -->
@@ -177,7 +197,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import axios from 'axios';
 import VChart from 'vue-echarts';
 import type { EChartsOption, SeriesOption } from 'echarts';
@@ -193,6 +213,8 @@ import { DISPLAY_PRESETS, chartTitle, getDisplayRange } from '../utils/display';
 // タートルズ型 (Donchian + ATR) 計算モジュール（ルックアヘッドなし: 前日までのデータのみ使用）
 import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
+import { SYMBOL_PATTERN, favoriteErrorMessage, isValidSymbol } from '../utils/favorites';
+import type { FavoriteEntry } from '../utils/favorites';
 
 use([CanvasRenderer, CandlestickChart, BarChart, LineChart, ScatterChart, TooltipComponent, GridComponent, DataZoomComponent, TitleComponent]);
 
@@ -222,8 +244,20 @@ const stockName = ref('');
 const period = ref('1mo');
 // シンボル入力の銘柄名取得デバウンス (Issue #49)
 let metaTimer: ReturnType<typeof setTimeout> | null = null;
-// シンボル形式（バックエンドの SYMBOL_RE と一致させ、銘柄名取得前の事前チェック用）
-const SYMBOL_PATTERN = /^[A-Z0-9.\-^=]{1,10}$/;
+// =====================================================================
+// お気に入り銘柄 (Issue #50)
+// =====================================================================
+// お気に入り一覧（バックエンド /api/favorites/ の登録順）。
+// 銘柄名はバックエンドが StockMeta と同期するので、ここでは表示のみ。
+const favorites = ref<FavoriteEntry[]>([]);
+// お気に入り追加・削除の操作中フラグ（二重クリック防止）
+const favoriteBusy = ref(false);
+// お気に入り操作のメッセージ（エラー表示用）
+const favoriteMessage = ref('');
+// 現在入力のシンボルがお気に入りか（大文字・小文字を無視）
+const isFavorite = computed(() =>
+  favorites.value.some((f) => f.symbol === symbol.value.trim().toUpperCase()),
+);
 const data = ref<StockRecord[]>([]);
 // 表示ウィンドウ: 表示期間プリセット（営業日換算、既定は 1 年分を表示）
 const displayPeriod = ref('1y');
@@ -1063,6 +1097,59 @@ async function fetchStockMeta() {
   }
 }
 
+// =====================================================================
+// お気に入り銘柄 (Issue #50): バックエンド /api/favorites/ 経由
+// =====================================================================
+
+// お気に入り一覧をバックエンドから再取得する（銘柄名の同期もここで取り込む）
+async function fetchFavorites() {
+  try {
+    const res = await axios.get('/api/favorites/');
+    favorites.value = (res.data as FavoriteEntry[]).map((f) => ({
+      symbol: f.symbol,
+      name: f.name ?? '',
+    }));
+  } catch (e) {
+    console.error('お気に入り取得エラー:', e);
+  }
+}
+
+// 現在入力のシンボルをお気に入りに追加する（POST /api/favorites/）
+async function addFavorite() {
+  const target = symbol.value.trim().toUpperCase();
+  if (!isValidSymbol(target)) {
+    favoriteMessage.value = 'シンボル形式が不正です（英大文字・数字、最大 10 文字）';
+    return;
+  }
+  if (favoriteBusy.value) return;
+  favoriteBusy.value = true;
+  favoriteMessage.value = '';
+  try {
+    await axios.post('/api/favorites/', { symbol: target });
+    await fetchFavorites();
+  } catch (e) {
+    const status: number | undefined = (e as { response?: { status?: number } })?.response?.status;
+    favoriteMessage.value = favoriteErrorMessage(status);
+  } finally {
+    favoriteBusy.value = false;
+  }
+}
+
+// お気に入り銘柄を削除する（DELETE /api/favorites/<symbol>/）
+async function removeFavorite(target: string) {
+  if (favoriteBusy.value) return;
+  favoriteBusy.value = true;
+  favoriteMessage.value = '';
+  try {
+    await axios.delete(`/api/favorites/${target}/`);
+    await fetchFavorites();
+  } catch (e) {
+    console.error('お気に入り削除エラー:', e);
+  } finally {
+    favoriteBusy.value = false;
+  }
+}
+
 async function fetchFromYahoo() {
   const target = symbol.value.trim();
   if (!target) return;
@@ -1079,6 +1166,8 @@ async function fetchFromYahoo() {
     await fetchStockData();
     // 直前に最新データを保存したばかりなので銘柄名も再取得 (Issue #49)
     void fetchStockMeta();
+    // お気に入り銘柄の名称は StockMeta と同期されるため一覧も再取得 (Issue #50)
+    void fetchFavorites();
   } catch (e: any) {
     const detail = e?.response?.data?.detail ?? e?.message ?? 'リクエストに失敗しました';
     yahooError.value = true;
@@ -1138,6 +1227,11 @@ watch(data, () => {
 // （旧データはチャートに残り続けるので、切替後もパンで過去を辿れる）
 watch([displayPeriod, displayCount], () => {
   applyDisplayWindow();
+});
+
+// 初期表示でお気に入り一覧を読み込む (Issue #50)
+onMounted(() => {
+  void fetchFavorites();
 });
 </script>
 
