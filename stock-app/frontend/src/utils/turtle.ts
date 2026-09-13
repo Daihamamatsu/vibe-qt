@@ -169,7 +169,7 @@ export function computePyramidTargets(sharePrice: number, atrN: number): Pyramid
 
 // --- ブレイク日基準の機械的計画 (買い増し / EXIT シミュレーション) ---
 
-/** 買い増しレベル (P2/P3/P4): 目標 = 買値 + mult × N (毎日その日の N で再計算) */
+/** 買い増しレベル (P2/P3/P4): 目標 = 直前ユニットの目標ライン + 0.5 × N (毎日その日の N で再計算) */
 export interface TurtlePlanLevel {
   /** ピラミッド段数 (2 = +0.5N / 3 = +1.0N / 4 = +1.5N) */
   level: 2 | 3 | 4;
@@ -177,7 +177,7 @@ export interface TurtlePlanLevel {
   mult: number;
   /** 到達日 (null = 未到達) */
   date: string | null;
-  /** 到達日時点の目標価格 (買値 + mult × 当日の N) */
+  /** 到達日時点の目標価格 (到達時の目標ラインを固定) */
   price: number | null;
   /** 到達日の終値 */
   hitClose: number | null;
@@ -189,7 +189,7 @@ export interface TurtlePlanExit {
   date: string | null;
   /** EXIT 日終値 */
   close: number | null;
-  /** EXIT 理由: 'stop' = 終値 ≤ 買値−2N / 'dc10' = 終値 < DC10 */
+  /** EXIT 理由: 'stop' = 終値 ≤ 最新エントリー−2N / 'dc10' = 終値 < DC10 */
   reason: 'stop' | 'dc10' | null;
 }
 
@@ -223,7 +223,9 @@ export interface TurtlePlan {
  *   次レベルは固定価格を基準とする (未到達の場合は当日の予測ラインを基準とする)
  * - 買い増し: 終値が (>=) その日の目標に到達した日に P2/P3/P4 を記録
  *   (同日に複数レベル到達を許容)
- * - ストップ = 買値 − 2 × N (その日の N で再計算; computeTurtle のトレーリングストップとは別物)
+ * - ストップロス = 最新エントリーの目標ライン − 2 × N (その日の N で再計算; computeTurtle のトレーリングストップとは別物)
+ *   買い増し (P2/P3/P4) が到達するたびに 0.5N ずつ引き上げられる (全ユニットのストップ繰り上げに相当)。
+ *   買い増し未到達時は買値 − 2N。
  * - EXIT: 終値 ≤ ストップ または 終値 < DC10 の初回到達日で計画終了
  *   (同日に両方に該当する場合は 'stop' を優先)
  *
@@ -253,6 +255,7 @@ export function computeTurtlePlan(
     // 買い増し: 各日「直前ユニットの目標ライン + 0.5 × N」で目標ラインを更新
     // (同日複数レベル到達を許容 / 到達したレベルは目標ラインを到達時の価格で固定)
     let prevLine = buyPrice; // P1 約定 = P2 の基準
+    let latestEntry = buyPrice; // 最新ユニットの目標ライン (買い増し後はその固定ライン; ストップ引き上げの基準)
     const lines: number[] = [];
     for (const lv of levels) {
       const line = lv.price !== null ? lv.price : prevLine + 0.5 * n;
@@ -262,6 +265,7 @@ export function computeTurtlePlan(
         lv.price = line; // 到達時の目標ラインを固定
         lv.hitClose = row.close;
       }
+      if (lv.price !== null) latestEntry = lv.price; // 到達済みレベルの固定ラインが最新エントリー
       prevLine = lv.price !== null ? lv.price : line;
     }
     latest = {
@@ -270,7 +274,7 @@ export function computeTurtlePlan(
       target1: lines[0],
       target2: lines[1],
       target3: lines[2],
-      stop: buyPrice - 2 * n,
+      stop: latestEntry - 2 * n, // ストップ = 最新エントリーの目標ライン − 2N (買い増しで引き上げ)
       dc10: row.donchianLower,
     };
     // EXIT: ストップロス または DC10 下抜け (初回到達で計画終了)

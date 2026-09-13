@@ -208,6 +208,20 @@ describe('computeTurtlePlan: 買い増し / EXIT の機械的シミュレーシ�
     makeBar(4, 14, 16, 14, 15),
     makeBar(5, 10, 16, 10, 10.5),
   ];
+  // ストップ引き上げ: P2 到達後は「最新エントリー目標ライン − 2N」が適用される。
+  // i=5: N = 2 → P2 = 14 + 1 = 15.0 到達(ライン固定) / i=6: N = 2.6 → ストップ = 15 − 5.2 = 9.8 (到達せず)
+  // i=7: N = 1.5 → ストップ = 15 − 3 = 12.0、終値 12 ≤ 12.0 で 'stop'
+  // (旧仕様の買値基準ストップ 14 − 3 = 11 ならこの日は EXIT しないため、引き上げ効果を検証できる)
+  const RATCHET: Bar[] = [
+    makeBar(0, 10, 12, 10, 11),
+    makeBar(1, 10, 12, 10, 11),
+    makeBar(2, 11, 13, 11, 12),
+    makeBar(3, 12, 15, 12, 14),
+    makeBar(4, 14, 15, 14, 14.8),
+    makeBar(5, 15, 16.75, 14.5, 15.5),
+    makeBar(6, 12.8, 13.2, 12.3, 12.4),
+    makeBar(7, 12.2, 12.4, 12.0, 12.0),
+  ];
 
   it('同日に複数の買い増し到達を許容する (P2/P3 到達、P4 未到達、EXIT なし)', () => {
     const rows = computeTurtle(RISING, { entryDays: 2, exitDays: 2, atrPeriod: 2 });
@@ -221,14 +235,14 @@ describe('computeTurtlePlan: 買い増し / EXIT の機械的シミュレーシ�
     expect(p3).toMatchObject({ level: 3, date: rows[5].date, price: 16.625, hitClose: 17 });
     expect(p4).toMatchObject({ level: 4, date: null, price: null, hitClose: null });
     expect(plan!.exit).toEqual({ date: null, close: null, reason: null });
-    // 直近日 (i=5) の再計算値
+    // 直近日 (i=5) の再計算値: ストップは最新エントリー P3 (16.625) − 2N = 11.375 まで引き上げ済み
     expect(plan!.latest).toEqual({
       date: rows[5].date,
       n: 2.625,
       target1: 15.3125,
       target2: 16.625,
       target3: 17.9375,
-      stop: 8.75,
+      stop: 11.375,
       dc10: 12,
     });
   });
@@ -252,16 +266,40 @@ describe('computeTurtlePlan: 買い増し / EXIT の機械的シミュレーシ�
     expect(p3).toMatchObject({ level: 3, date: null, price: null, hitClose: null });
     expect(p4).toMatchObject({ level: 4, date: null, price: null, hitClose: null });
     // target1 は到達時に固定された 14.875、target2 は固定 P2 ライン + 0.5×N(当日) = 16.0625
+    // ストップは最新エントリー P2 (14.875) − 2N = 10.125 まで引き上げ済み (買値基準なら 9.25)
     expect(plan!.latest).toEqual({
       date: rows[5].date,
       n: 2.375,
       target1: 14.875,
       target2: 16.0625,
       target3: 17.25,
-      stop: 9.25,
+      stop: 10.125,
       dc10: 12,
     });
     expect(plan!.exit).toEqual({ date: null, close: null, reason: null });
+  });
+
+  it('買い増し到達後は最新エントリー目標ライン − 2N までストップが引き上げられ EXIT する', () => {
+    const rows = computeTurtle(RATCHET, { entryDays: 2, exitDays: 5, atrPeriod: 2 });
+    expect(rows[3].buy).toBe(true);
+    const plan = computeTurtlePlan(rows, rows[3].date, rows[3].close);
+    const [p2, p3, p4] = plan!.levels;
+    // i=5: P2 = 14 + 0.5*2 = 15.0 到達(固定)、P3 = 16.0 には届かない
+    expect(p2).toMatchObject({ level: 2, date: rows[5].date, price: 15, hitClose: 15.5 });
+    expect(p3).toMatchObject({ level: 3, date: null, price: null, hitClose: null });
+    expect(p4).toMatchObject({ level: 4, date: null, price: null, hitClose: null });
+    // i=7: ストップ = 15 - 2*1.5 = 12.0、終値 12 ≤ 12.0 → 'stop'
+    // (買値基準の旧ストップ 14 - 3 = 11 ならこの日は EXIT しない)
+    expect(plan!.exit).toEqual({ date: rows[7].date, close: 12, reason: 'stop' });
+    expect(plan!.latest).toEqual({
+      date: rows[7].date,
+      n: 1.5,
+      target1: 15,
+      target2: 15.75,
+      target3: 16.5,
+      stop: 12,
+      dc10: 11,
+    });
   });
 
   it('終値 ≤ 買値 − 2N の初回到達日でストップロス EXIT', () => {
