@@ -728,12 +728,28 @@ const chartOptions = computed<EChartsOption>(() => {
     },
   ];
 
+  // --- BUY/EXIT マーカー配置パラメータ (Issue #46) ---
+  // マーカーはローソク足の高値 / 安値から MARK_GAP_PX ピクセル上 / 下に配置する。
+  // （三角形 symbolSize 12 の半高さ 6px に 4px の空きを確保）
+  // y 軸 min/max 関数（下記）がデータ範囲の上下に PAD_TOP_PX / PAD_BOT_PX
+  // ピクセルの余白を常に確保するため、マーカーがグリッド端で
+  // 切れたりローソク足と重なったりしない。
+  const PRICE_GRID_PX = 640 * 0.45; // 上段グリッド高さ（チャート 640px × 高さ 45%）
+  const PAD_TOP_PX = 20; // グリッド上部: BUY マーカー (△) の表示余白
+  const PAD_BOT_PX = 20; // グリッド下部: EXIT マーカー (▽) の表示余白
+  const MARK_GAP_PX = 10; // マーカー点とローソク足高値 / 安値の間隔 (px)
+  const axisBound = (v: { min: number; max: number }, isMax: boolean): number => {
+    const span = v.max - v.min;
+    if (!(span > 0)) return isMax ? v.max * 1.001 : v.min * 0.999;
+    const pp = span / Math.max(PRICE_GRID_PX - PAD_TOP_PX - PAD_BOT_PX, 1);
+    return isMax ? v.max + PAD_TOP_PX * pp : v.min - PAD_BOT_PX * pp;
+  };
+
   // タートル表示ON時の追加系列
   if (on) {
     // --- BUY/EXIT マーカー配置用の価格レンジ (Issue #46) ---
-    // y 軸の自動レンジはローソク足 + Donchian バンド (+ markLine 値) で決まるため、
-    // 同一データで算出し、マーカーがこの範囲内に収まるようにクランプする。
-    // そうすることで、マーカーの追加がチャートのスケールを変更しない。
+    // 全データ（ローソク足 + Donchian バンド + markLine 値）の価格レンジ。
+    // 固定ピクセル間隔 MARK_GAP_PX を価格に変換するためにのみ使用する。
     let priceMin = Infinity;
     let priceMax = -Infinity;
     const widenRange = (v: number | null) => {
@@ -757,13 +773,10 @@ const chartOptions = computed<EChartsOption>(() => {
       widenRange(tg.stop);
     }
     const priceSpan = priceMax - priceMin;
-    // グリッドの端でシンボルが切れないよう、上下 1% だけレンジ内側に収める
-    const EDGE_MARGIN = 0.01;
-    const clampPrice = (v: number) =>
-      Math.min(Math.max(v, priceMin + EDGE_MARGIN * priceSpan), priceMax - EDGE_MARGIN * priceSpan);
-    // ローソク足からの隙間: 当日 ATR の半分を優先、ATR 未算出時はレンジ幅の 2%
-    const signalGap = (atr: number | null) =>
-      atr !== null && atr > 0 ? Math.max(0.5 * atr, 0.005 * priceSpan) : 0.02 * priceSpan;
+    // 価格パネルの 1px あたりの価格量（パディング分を差し引いた有効高さで換算）
+    const pxPerPoint =
+      priceSpan > 0 ? priceSpan / Math.max(PRICE_GRID_PX - PAD_TOP_PX - PAD_BOT_PX, 1) : 0;
+    const markerGapPrice = MARK_GAP_PX * pxPerPoint;
 
     series.push(
       {
@@ -794,7 +807,7 @@ const chartOptions = computed<EChartsOption>(() => {
       },
       {
         // BUY マーカー: 終値がエントリーラインを上抜けした日（日本式: 赤）
-        // ローソク足の高値より上側に配置 (Issue #46)。レンジ外なら内側にクランプする
+        // ローソク足の高値より MARK_GAP_PX ピクセル上側に配置 (Issue #46)
         name: 'BUY',
         type: 'scatter',
         xAxisIndex: 0,
@@ -802,16 +815,15 @@ const chartOptions = computed<EChartsOption>(() => {
         data: rows.map((r, i) => {
           if (!r.buy) return null;
           const high = Number(records[i].high ?? records[i].close);
-          return clampPrice(high + signalGap(r.atr));
+          return high + markerGapPrice;
         }),
         symbol: 'triangle',
         symbolSize: 12,
         itemStyle: { color: '#e2534f' },
-        label: { show: true, position: 'top', formatter: 'BUY', color: '#e2534f', fontSize: 10 },
       },
       {
         // EXIT マーカー: 手仕舞いライン下抜けまたはトレーリングストップ到達の日（日本式: 緑）
-        // ローソク足の安値より下側に配置 (Issue #46)。レンジ外なら内側にクランプする
+        // ローソク足の安値より MARK_GAP_PX ピクセル下側に配置 (Issue #46)
         name: 'EXIT',
         type: 'scatter',
         xAxisIndex: 0,
@@ -819,13 +831,12 @@ const chartOptions = computed<EChartsOption>(() => {
         data: rows.map((r, i) => {
           if (!r.exit) return null;
           const low = Number(records[i].low ?? records[i].close);
-          return clampPrice(low - signalGap(r.atr));
+          return low - markerGapPrice;
         }),
         symbol: 'triangle',
         symbolRotate: 180, // 下向き三角形
         symbolSize: 12,
         itemStyle: { color: '#3ba272' },
-        label: { show: true, position: 'bottom', formatter: 'EXIT', color: '#3ba272', fontSize: 10 },
       },
       {
         // N (ATR): True Range の単純移動平均（サブパネルに表示）
@@ -959,7 +970,15 @@ const chartOptions = computed<EChartsOption>(() => {
         ],
     yAxis: on
       ? [
-          { type: 'value', scale: true, gridIndex: 0 },
+          {
+            type: 'value',
+            gridIndex: 0,
+            // BUY/EXIT マーカー + 文字ラベル分を固定ピクセルで確保 (Issue #46)。
+            // 関数形のため dataZoom が可視ウィンドウを変えても再評価され、
+            // 可視ローソク足への自動フィット（スケール変化）は維持される。
+            min: (v: { min: number; max: number }) => axisBound(v, false),
+            max: (v: { min: number; max: number }) => axisBound(v, true),
+          },
           {
             type: 'value',
             gridIndex: 1,
