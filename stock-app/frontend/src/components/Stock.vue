@@ -39,24 +39,34 @@
       <p v-if="yahooMessage" :style="{ marginTop: '.5rem', marginBottom: 0, color: yahooError ? '#c0392b' : '#2c7a2c' }">
         {{ yahooMessage }}
       </p>
-      <!-- お気に入り銘柄リスト (Issue #50): リストごとに分類、シンボルクリックでその銘柄へ切替 -->
+      <!-- お気に入り銘柄リスト (Issue #50): select ボックスでリスト選択、シンボルクリックでその銘柄へ切替 -->
       <div style="margin-top:.5rem;">
         <p style="margin:0 0 .25rem;font-weight:bold;">★ お気に入り</p>
-        <ul style="margin:0;padding:0;">
-          <li v-for="g in favoriteGroups" :key="g.id" style="margin:.15rem 0;display:flex;align-items:center;">
-            <button
-              :disabled="favoriteBusy"
-              :style="{ color: g.id === activeListId ? '#1a73e8' : '#333', fontWeight: g.id === activeListId ? 'bold' : 'normal' }"
-              :title="`このリストを選択（お気に入りをこのリストに追加/削除）`"
-              @click="activeListId = g.id"
-            >{{ g.id === activeListId ? '▶' : '•' }} {{ g.name }}（{{ g.stocks.length }}）</button>
-            <button :disabled="favoriteBusy" style="margin-left:.5rem;" title="リスト名を変更" @click="renameActiveList(g.id)">名前変更</button>
-            <button :disabled="favoriteBusy" style="margin-left:.25rem;" title="リストを削除" @click="deleteActiveList(g.id)">削除</button>
-          </li>
-          <li v-if="favoriteGroups.length === 0" style="color:#888;">リストがありません</li>
-        </ul>
-        <button :disabled="favoriteBusy" style="margin:0 0 .25rem;" @click="createList">＋ 新しいリストを作成</button>
-        <ul style="margin:0;padding:0;">
+        <div style="display:flex;gap:.25rem;align-items:center;flex-wrap:wrap;">
+          <!-- リスト選択 (Issue #50): select ボックス。値は文字列で届くため onListSelectChange で数値化 -->
+          <select
+            :value="activeListId ?? ''"
+            :disabled="favoriteBusy"
+            title="リストを選択（お気に入りをこのリストに追加/削除）"
+            style="min-width:11rem;"
+            @change="onListSelectChange"
+          >
+            <option v-for="g in favoriteGroups" :key="g.id" :value="g.id">{{ g.name }}（{{ g.stocks.length }}）</option>
+          </select>
+          <button
+            :disabled="favoriteBusy || activeListId === null"
+            title="選択中のリストの名前を変更"
+            @click="renameActiveList(activeListId)"
+          >名前変更</button>
+          <button
+            :disabled="favoriteBusy || activeListId === null"
+            title="選択中のリストを削除"
+            @click="deleteActiveList(activeListId)"
+          >削除</button>
+          <button :disabled="favoriteBusy" title="新しいリストを作成" @click="createList">＋ 新しいリストを作成</button>
+        </div>
+        <p v-if="favoriteGroups.length === 0" style="margin:.25rem 0 0;color:#888;">リストがありません</p>
+        <ul style="margin:.5rem 0 0;padding:0;">
           <li v-for="f in activeGroup?.stocks ?? []" :key="f.symbol" style="margin:.15rem 0;">
             <a href="#" :style="{ color:'#1a73e8' }" @click.prevent="symbol = f.symbol">{{ f.symbol }}</a>
             <span v-if="f.name" style="color:#555;">{{ f.name }}</span>
@@ -1228,9 +1238,15 @@ async function createList() {
   }
 }
 
+// select ボックスでのリスト選択 (Issue #50)。option の value は文字列で届くため数値化する。
+function onListSelectChange(e: Event) {
+  const value = (e.target as HTMLSelectElement).value;
+  activeListId.value = value === '' ? null : Number(value);
+}
+
 // リスト名を変更する（PATCH /api/favorite-lists/<id>/）
-async function renameActiveList(listId: number) {
-  if (favoriteBusy.value) return;
+async function renameActiveList(listId: number | null) {
+  if (favoriteBusy.value || listId === null) return;
   const current = favoriteGroups.value.find((g) => g.id === listId);
   if (current === undefined) return;
   const input = window.prompt('リスト名を変更（50 字以内）:', current.name);
@@ -1253,8 +1269,8 @@ async function renameActiveList(listId: number) {
 }
 
 // リストを削除する（DELETE /api/favorite-lists/<id>/）。所属銘柄の行も一緒に削除される。
-async function deleteActiveList(listId: number) {
-  if (favoriteBusy.value) return;
+async function deleteActiveList(listId: number | null) {
+  if (favoriteBusy.value || listId === null) return;
   const current = favoriteGroups.value.find((g) => g.id === listId);
   if (current === undefined) return;
   const ok = window.confirm(
