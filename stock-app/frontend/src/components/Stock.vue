@@ -206,7 +206,7 @@
             </td>
           </tr>
           <tr v-if="turtlePlan">
-            <th>買い増し計画 (P2/P3/P4)<br /><small>毎日 買値 + {0.5, 1.0, 1.5} × N で再計算</small></th>
+            <th>買い増し計画 (P2/P3/P4)<br /><small>毎日 直前ユニットの目標ライン + 0.5 × N で再計算 (到達後はライン固定)</small></th>
             <td>
               +0.5N: {{ fmtPlanLevel(turtlePlan.levels[0]) }}<br />
               +1.0N: {{ fmtPlanLevel(turtlePlan.levels[1]) }}<br />
@@ -214,7 +214,7 @@
             </td>
           </tr>
           <tr v-if="turtlePlan">
-            <th>EXIT 計画<br /><small>終値 ≤ 買値−2N または 終値 &lt; DC10</small></th>
+            <th>EXIT 計画<br /><small>終値 ≤ 最新エントリー−2N または 終値 &lt; DC10</small></th>
             <td>{{ fmtPlanExit(turtlePlan) }}</td>
           </tr>
         </tbody>
@@ -648,7 +648,7 @@ function fmtPlanExit(plan: TurtlePlan): string {
   if (plan.exit.date === null) return '未到達';
   const reason =
     plan.exit.reason === 'stop'
-      ? 'ストップロス (終値 ≤ 買値−2N)'
+      ? 'ストップロス (終値 ≤ 最新エントリー−2N)'
       : 'DC10 下抜け (終値 < DC10)';
   return `${plan.exit.date} ${reason} (終値 ${fmtPrice(plan.exit.close)})`;
 }
@@ -1057,7 +1057,7 @@ const chartOptions = computed<EChartsOption>(() => {
       );
       if (buyAdds.length > 0) {
         series.push({
-          // 買い増し: 終値が 買値 + {0.5, 1.0, 1.5} × N (当日 N で再計算) に到達した日
+          // 買い増し: 終値が 直前ユニットの目標ライン + 0.5 × N (当日 N で再計算 / 到達後は到達時の価格でライン固定) に到達した日
           name: '買い増し 2/3/4',
           type: 'scatter',
           xAxisIndex: 0,
@@ -1079,7 +1079,7 @@ const chartOptions = computed<EChartsOption>(() => {
       }
       if (plan.exit.date !== null && plan.exit.close !== null) {
         series.push({
-          // 計画 EXIT: 終値 ≤ 買値−2N (ストップ) または 終値 < DC10 の初回到達日
+          // 計画 EXIT: 終値 ≤ 最新エントリー−2N (ストップ) または 終値 < DC10 の初回到達日
           name: '計画 EXIT',
           type: 'scatter',
           xAxisIndex: 0,

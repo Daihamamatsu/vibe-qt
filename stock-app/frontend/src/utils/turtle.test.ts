@@ -104,8 +104,8 @@ describe('computeTurtle: Donchian バンド（ルックアヘッドなし）', (
   });
 });
 
-describe('computeTurtle: ATR（True Range の単純移動平均）', () => {
-  it('一定 TR=2 系列 (atrPeriod: 14) では ATR = 2、それ以前は null', () => {
+describe('computeTurtle: ATR（True Range の Wilder 平滑化）', () => {
+  it('一定 TR=2 系列 (atrPeriod: 14) では ATR = 2、それ以前は null（一定系列では SMA と一致）', () => {
     const rows = computeTurtle(makeConstantTrBars(30), { atrPeriod: 14 });
     // 14 日分が揃う前 (i < 13) は null
     expect(rows[12].atr).toBeNull();
@@ -124,6 +124,19 @@ describe('computeTurtle: ATR（True Range の単純移動平均）', () => {
     expect(rows[19].trailingStop).toBe(8);
     expect(rows[29].atr).toBe(2);
     expect(rows[29].trailingStop).toBe(8);
+  });
+
+  it('初期値 = 最初の atrPeriod 日間の TR 単純平均、以降は Wilder 再帰で更新される', () => {
+    // close = 10,12,15,19,24,30 (hi=lo=close にフォールバック) → TR = [0, 2, 3, 4, 5, 6]
+    const bars: Bar[] = [10, 12, 15, 19, 24, 30].map((c, i) => makeBar(i, c, c, c, c));
+    const rows = computeTurtle(bars, { atrPeriod: 4 });
+    // 初期データ (3 日) までは null
+    expect(rows[2].atr).toBeNull();
+    // 初期値 = (0+2+3+4)/4 = 2.25
+    expect(rows[3].atr).toBe(2.25);
+    // Wilder 再帰: (2.25*3+5)/4 = 2.9375, (2.9375*3+6)/4 = 3.703125
+    expect(rows[4].atr).toBe(2.9375);
+    expect(rows[5].atr).toBe(3.703125);
   });
 });
 
@@ -171,20 +184,21 @@ describe('computeTurtlePlan: 買い増し / EXIT の機械的シミュレーシ�
     makeBar(1, 10, 12, 10, 11),
     makeBar(2, 11, 13, 11, 12),
     makeBar(3, 12, 15, 12, 14),
-    makeBar(4, 14, 16, 14, 15), // 終値 15 < 目標 15.25 → 到達しない
-    makeBar(5, 15, 18, 15, 17), // 終値 17 ≥ 15.25 (P2) かつ ≥ 16.5 (P3)
+    makeBar(4, 14, 16, 14, 15), // 終値 15 < P2 ライン 15.125 (N=2.25) → 到達しない
+    makeBar(5, 15, 18, 15, 17), // 終値 17 ≥ 15.3125 (P2) かつ ≥ 16.625 (P3)
   ];
-  // 下落: i=5 で N = 1.5, ストップ = 14 - 2*1.5 = 11, 終値 11 ≤ 11 → ストップ
-  // (DC10 = min(l0..l4) = 10 ではないため理由は 'stop')
+  // 緩やかな下落: i=6 で N = 1.1875, ストップ = 14 - 2*1.1875 = 11.625,
+  // 終値 11 ≤ 11.625 (DC10 = min(l1..l5) = 10 を上回るため理由は 'stop')
   const FALLING: Bar[] = [
     makeBar(0, 10, 12, 10, 11),
     makeBar(1, 10, 12, 10, 11),
     makeBar(2, 11, 13, 11, 12),
     makeBar(3, 12, 15, 12, 14),
-    makeBar(4, 13, 14, 12, 12),
-    makeBar(5, 11, 12, 11, 11),
+    makeBar(4, 13, 14, 13, 13),
+    makeBar(5, 12, 13, 12, 12),
+    makeBar(6, 11, 12, 11, 11),
   ];
-  // 急落: i=5 で TR = 6 → N = (2+6)/2 = 4, ストップ = 14 - 8 = 6 (到達せず)。
+  // 急落: i=5 で TR = 6 → Wilder N = (2.25+6)/2 = 4.125, ストップ = 14 - 2*4.125 = 5.75 (到達せず)。
   // DC10 = min(l3,l4) = 12, 終値 10.5 < 12 → DC10 下抜けで EXIT
   const DC10_DROP: Bar[] = [
     makeBar(0, 10, 12, 10, 11),
@@ -194,6 +208,20 @@ describe('computeTurtlePlan: 買い増し / EXIT の機械的シミュレーシ�
     makeBar(4, 14, 16, 14, 15),
     makeBar(5, 10, 16, 10, 10.5),
   ];
+  // ストップ引き上げ: P2 到達後は「最新エントリー目標ライン − 2N」が適用される。
+  // i=5: N = 2 → P2 = 14 + 1 = 15.0 到達(ライン固定) / i=6: N = 2.6 → ストップ = 15 − 5.2 = 9.8 (到達せず)
+  // i=7: N = 1.5 → ストップ = 15 − 3 = 12.0、終値 12 ≤ 12.0 で 'stop'
+  // (旧仕様の買値基準ストップ 14 − 3 = 11 ならこの日は EXIT しないため、引き上げ効果を検証できる)
+  const RATCHET: Bar[] = [
+    makeBar(0, 10, 12, 10, 11),
+    makeBar(1, 10, 12, 10, 11),
+    makeBar(2, 11, 13, 11, 12),
+    makeBar(3, 12, 15, 12, 14),
+    makeBar(4, 14, 15, 14, 14.8),
+    makeBar(5, 15, 16.75, 14.5, 15.5),
+    makeBar(6, 12.8, 13.2, 12.3, 12.4),
+    makeBar(7, 12.2, 12.4, 12.0, 12.0),
+  ];
 
   it('同日に複数の買い増し到達を許容する (P2/P3 到達、P4 未到達、EXIT なし)', () => {
     const rows = computeTurtle(RISING, { entryDays: 2, exitDays: 2, atrPeriod: 2 });
@@ -201,20 +229,76 @@ describe('computeTurtlePlan: 買い増し / EXIT の機械的シミュレーシ�
     const plan = computeTurtlePlan(rows, rows[3].date, rows[3].close);
     expect(plan).not.toBeNull();
     const [p2, p3, p4] = plan!.levels;
-    // N = 2.5 → P2 = 15.25, P3 = 16.5, P4 = 17.75 (終値 17: P2/P3 到達、P4 未到達)
-    expect(p2).toMatchObject({ level: 2, date: rows[5].date, price: 15.25, hitClose: 17 });
-    expect(p3).toMatchObject({ level: 3, date: rows[5].date, price: 16.5, hitClose: 17 });
+    // Wilder: N(5) = 2.625 → P2 = 14+0.5N = 15.3125, P3 = 15.3125+0.5N = 16.625, P4 = 16.625+0.5N = 17.9375
+    // 終値 17: P2/P3 到達、P4 未到達
+    expect(p2).toMatchObject({ level: 2, date: rows[5].date, price: 15.3125, hitClose: 17 });
+    expect(p3).toMatchObject({ level: 3, date: rows[5].date, price: 16.625, hitClose: 17 });
     expect(p4).toMatchObject({ level: 4, date: null, price: null, hitClose: null });
     expect(plan!.exit).toEqual({ date: null, close: null, reason: null });
-    // 直近日 (i=5) の再計算値
+    // 直近日 (i=5) の再計算値: ストップは最新エントリー P3 (16.625) − 2N = 11.375 まで引き上げ済み
     expect(plan!.latest).toEqual({
       date: rows[5].date,
-      n: 2.5,
-      target1: 15.25,
-      target2: 16.5,
-      target3: 17.75,
-      stop: 9,
+      n: 2.625,
+      target1: 15.3125,
+      target2: 16.625,
+      target3: 17.9375,
+      stop: 11.375,
       dc10: 12,
+    });
+  });
+
+  it('P2 到達後は P3 が固定された P2 ラインから +0.5×N(当日) で更新される (buyPrice 基準にならない)', () => {
+    const CHAIN: Bar[] = [
+      makeBar(0, 10, 12, 10, 11),
+      makeBar(1, 10, 12, 10, 11),
+      makeBar(2, 11, 13, 11, 12),
+      makeBar(3, 12, 15, 12, 14),
+      // i=4: N = (2.5*1+1)/2 = 1.75 → P2 ライン = 14.875 ≤ 終値 15 → P2 到達(ライン固定)
+      makeBar(4, 14, 15, 14, 15),
+      // i=5: N = (1.75*1+3)/2 = 2.375 → P3 ライン = 14.875 + 0.5*2.375 = 16.0625 (買値基準の 16.375 とは異なる)
+      makeBar(5, 15, 18, 15, 16),
+    ];
+    const rows = computeTurtle(CHAIN, { entryDays: 2, exitDays: 2, atrPeriod: 2 });
+    const plan = computeTurtlePlan(rows, rows[3].date, rows[3].close);
+    const [p2, p3, p4] = plan!.levels;
+    expect(p2).toMatchObject({ level: 2, date: rows[4].date, price: 14.875, hitClose: 15 });
+    // P3/P4 は到達しない (16 < 16.0625)
+    expect(p3).toMatchObject({ level: 3, date: null, price: null, hitClose: null });
+    expect(p4).toMatchObject({ level: 4, date: null, price: null, hitClose: null });
+    // target1 は到達時に固定された 14.875、target2 は固定 P2 ライン + 0.5×N(当日) = 16.0625
+    // ストップは最新エントリー P2 (14.875) − 2N = 10.125 まで引き上げ済み (買値基準なら 9.25)
+    expect(plan!.latest).toEqual({
+      date: rows[5].date,
+      n: 2.375,
+      target1: 14.875,
+      target2: 16.0625,
+      target3: 17.25,
+      stop: 10.125,
+      dc10: 12,
+    });
+    expect(plan!.exit).toEqual({ date: null, close: null, reason: null });
+  });
+
+  it('買い増し到達後は最新エントリー目標ライン − 2N までストップが引き上げられ EXIT する', () => {
+    const rows = computeTurtle(RATCHET, { entryDays: 2, exitDays: 5, atrPeriod: 2 });
+    expect(rows[3].buy).toBe(true);
+    const plan = computeTurtlePlan(rows, rows[3].date, rows[3].close);
+    const [p2, p3, p4] = plan!.levels;
+    // i=5: P2 = 14 + 0.5*2 = 15.0 到達(固定)、P3 = 16.0 には届かない
+    expect(p2).toMatchObject({ level: 2, date: rows[5].date, price: 15, hitClose: 15.5 });
+    expect(p3).toMatchObject({ level: 3, date: null, price: null, hitClose: null });
+    expect(p4).toMatchObject({ level: 4, date: null, price: null, hitClose: null });
+    // i=7: ストップ = 15 - 2*1.5 = 12.0、終値 12 ≤ 12.0 → 'stop'
+    // (買値基準の旧ストップ 14 - 3 = 11 ならこの日は EXIT しない)
+    expect(plan!.exit).toEqual({ date: rows[7].date, close: 12, reason: 'stop' });
+    expect(plan!.latest).toEqual({
+      date: rows[7].date,
+      n: 1.5,
+      target1: 15,
+      target2: 15.75,
+      target3: 16.5,
+      stop: 12,
+      dc10: 11,
     });
   });
 
@@ -222,8 +306,9 @@ describe('computeTurtlePlan: 買い増し / EXIT の機械的シミュレーシ�
     const rows = computeTurtle(FALLING, { entryDays: 2, exitDays: 5, atrPeriod: 2 });
     expect(rows[3].buy).toBe(true);
     const plan = computeTurtlePlan(rows, rows[3].date, rows[3].close);
-    // i=5: N = 1.5 → ストップ = 11, 終値 11 ≤ 11 (DC10 = 10 は上回るため 'stop')
-    expect(plan!.exit).toEqual({ date: rows[5].date, close: 11, reason: 'stop' });
+    // i=6: N = 1.1875 → ストップ = 14 - 2*1.1875 = 11.625, 終値 11 ≤ 11.625
+    // (DC10 = min(l1..l5) = 10 を上回るため理由は 'stop')
+    expect(plan!.exit).toEqual({ date: rows[6].date, close: 11, reason: 'stop' });
     // 目標到達前に EXIT したため買い増しは未到達
     expect(plan!.levels.every(l => l.date === null)).toBe(true);
   });
@@ -286,8 +371,9 @@ describe('computeTurtle: エッジケース', () => {
     const rows = computeTurtle(bars, { entryDays: 2, exitDays: 2, atrPeriod: 2 });
     expect(rows[2].donchianUpper).toBe(11);
     expect(rows[2].donchianLower).toBe(10);
-    // TR は常に |close - 前日close| = 1 になり、atrPeriod=2 で ATR = 1
-    expect(rows[2].atr).toBe(1);
+    // TR は [0, 1, 1, 1, 1] (初日は high-low = 0)
+    // Wilder: 初期値 (0+1)/2 = 0.5 → 以降 (0.5*1+1)/2 = 0.75
+    expect(rows[2].atr).toBe(0.75);
   });
 });
 
