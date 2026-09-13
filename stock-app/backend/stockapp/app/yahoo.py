@@ -71,12 +71,31 @@ def fetch_ohlcv(symbol: str, period: str = '1mo') -> list:
     return rows
 
 
+def fetch_stock_name(symbol: str) -> str:
+    """Yahoo Finance から銘柄の正式名称（会社名）を取得する。
+
+    yfinance の Ticker.info を用い、shortName / longName を返す。
+    通信失敗・未知シンボルなどは空文字を返す（例外は送出しない）—
+    銘柄名は補完データのため、失敗しても株価取得の本体処理には影響させない (Issue #49)。
+    """
+    try:
+        import yfinance as yf  # 遅延 import（モジュール docstring 参照）
+        info = yf.Ticker(symbol).info
+    except Exception:
+        # 通信エラーに加え、yfinance 未導入環境（ModuleNotFoundError 等）でも空文字を返す
+        return ''
+    if not isinstance(info, dict):
+        return ''
+    name = info.get('shortName') or info.get('longName') or ''
+    return str(name).strip()
+
+
 def fetch_and_save(symbol: str, period: str = '1mo') -> dict:
     """Yahoo Finance から日足 OHLC を取得して DB に upsert する。
 
     既存の (symbol, date) レコードは更新、新規レコードは一括作成する。
     """
-    from .models import StockRecord
+    from .models import StockMeta, StockRecord
 
     rows = fetch_ohlcv(symbol, period)
     dates = [row[0] for row in rows]
@@ -104,6 +123,12 @@ def fetch_and_save(symbol: str, period: str = '1mo') -> dict:
             updated += 1
     if to_create:
         StockRecord.objects.bulk_create(to_create)
+
+    # 銘柄名を取得してキャッシュ（best effort: 銘柄名取得の失敗が株価保存を妨げない）(Issue #49)
+    StockMeta.objects.update_or_create(
+        symbol=symbol,
+        defaults={'name': fetch_stock_name(symbol)},
+    )
 
     return {
         'symbol': symbol,

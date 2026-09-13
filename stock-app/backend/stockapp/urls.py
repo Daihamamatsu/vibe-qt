@@ -1,5 +1,11 @@
 from django.urls import path
-from stockapp.app.views import moving_average, stock_fetch, stock_list_all, stock_list_by_symbol
+from stockapp.app.views import (
+    moving_average,
+    stock_fetch,
+    stock_list_all,
+    stock_list_by_symbol,
+    stock_meta,
+)
 
 # ルート定義（順序が重要）:
 # - api/stocks/fetch/ は api/stocks/<str:symbol>/ より前に置くこと
@@ -10,6 +16,9 @@ from stockapp.app.views import moving_average, stock_fetch, stock_list_all, stoc
 #   出していた（Issue #19）。
 urlpatterns = [
     path('api/stocks/fetch/', stock_fetch),
+    # meta ルートは <str:symbol> ルートより前に置く（"AAPL" の後続セグメントを
+    # シンボル先取りで 404 にしないため）
+    path('api/stocks/<str:symbol>/meta/', stock_meta),
     path('api/stocks/<str:symbol>/', stock_list_by_symbol),
     path('api/moving_average/<str:symbol>/', moving_average),
     path('api/stocks/', stock_list_all),

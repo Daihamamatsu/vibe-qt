@@ -18,3 +18,15 @@ class StockRecord(models.Model):
                 name='stockrecord_symbol_date_uniq',
             ),
         ]
+
+
+class StockMeta(models.Model):
+    """銘柄メタ情報（銘柄名など）。
+
+    Yahoo Finance の株価データには銘柄名が含まれないため、Ticker.info から
+    別途取得してこのテーブルにキャッシュする（Issue #49）。
+    """
+
+    symbol = models.CharField(max_length=10, unique=True)
+    name = models.CharField(max_length=200, blank=True, default='')
+    updated_at = models.DateTimeField(auto_now=True)

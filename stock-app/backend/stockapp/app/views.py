@@ -1,9 +1,9 @@
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from .models import StockRecord
+from .models import StockMeta, StockRecord
 from .serializers import StockRecordSerializer
-from .yahoo import SYMBOL_RE, VALID_PERIODS, StockFetchError, fetch_and_save
+from .yahoo import SYMBOL_RE, VALID_PERIODS, StockFetchError, fetch_and_save, fetch_stock_name
 
 
 @api_view(['POST'])
@@ -33,6 +33,27 @@ def stock_fetch(request):
     except StockFetchError as exc:
         return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
     return Response(result)
+
+
+@api_view(['GET'])
+def stock_meta(request, symbol):
+    """GET /api/stocks/<symbol>/meta/ — 銘柄名（メタ情報）(Issue #49)。
+
+    DB に StockMeta 行があれば（name が空の場合 = 負のキャッシュも含む）それを返す。
+    行がない場合は Yahoo Finance から取得（best effort）して DB 保存の上で返す。
+    """
+    if not SYMBOL_RE.match(symbol):
+        return Response(
+            {'detail': f'invalid symbol: {symbol}'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    meta = StockMeta.objects.filter(symbol=symbol).first()
+    if meta is None:
+        meta, _ = StockMeta.objects.update_or_create(
+            symbol=symbol,
+            defaults={'name': fetch_stock_name(symbol)},
+        )
+    return Response({'symbol': symbol, 'name': meta.name})
 
 
 @api_view(['GET'])

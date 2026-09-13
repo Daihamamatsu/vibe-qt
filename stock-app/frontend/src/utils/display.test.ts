@@ -4,7 +4,7 @@
 // カスタム本数指定と期間プリセットの優先順位、末尾部分列の切り出し挙動。
 
 import { describe, expect, it } from 'vitest';
-import { getDisplayRange, resolveDisplayCount } from './display';
+import { getDisplayRange, resolveDisplayCount, chartTitle } from './display';
 
 describe('resolveDisplayCount', () => {
   it('期間プリセットに応じた本数を返す', () => {
@@ -72,5 +72,15 @@ describe('getDisplayRange', () => {
   it('無効なカスタム本数指定（空文字）は期間プリセットにフォールバックする', () => {
     // 空文字 → 1mo = 22 本, 総数 100 → プリセット指定と同じ 78.79
     expect(getDisplayRange(100, '1mo', '')).toEqual({ start: 78.79, end: 100 });
+  });
+});
+
+describe('chartTitle (Issue #49)', () => {
+  it('銘柄名があれば "シンボル 銘柄名" を返す', () => {
+    expect(chartTitle('AAPL', 'Apple Inc.')).toBe('AAPL Apple Inc.');
+  });
+
+  it('銘柄名がなければシンボルのみのタイトルを返す', () => {
+    expect(chartTitle('AAPL', '')).toBe('AAPL');
   });
 });
