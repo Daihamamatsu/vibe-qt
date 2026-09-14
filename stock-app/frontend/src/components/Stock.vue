@@ -32,6 +32,11 @@
         <label>本数:</label>
         <!-- 表示するローソク足の本数指定（空欄 = 表示期間に従う。本数指定が期間より優先される） -->
         <input v-model.number="displayCount" type="number" min="1" step="1" placeholder="期間に連動" style="width:5.5rem;" />
+        <!-- OBV (On-Balance Volume) 表示トグル (Issue #61): ON 時、出来高の下に OBV パネルを追加 -->
+        <label style="display:flex;gap:.35rem;align-items:center;">
+          <input type="checkbox" v-model="obvEnabled" />
+          OBV 表示
+        </label>
         <button @click="fetchStockData">取得</button>
         <button :disabled="fetching" @click="fetchFromYahoo">Yahoo Finance から取得</button>
       </div>
@@ -81,7 +86,7 @@
     <!-- チャート表示（日足ローソク足 + 出来高バー + タートル ATR サブパネル + 下部ズームスライダー） -->
     <!-- chart-wrapper: 固定情報パネルの position 参照容器 -->
     <div ref="wrapperRef" class="chart-wrapper">
-      <v-chart ref="chartRef" :option="chartOptions" :style="{ height: turtleEnabled ? '640px' : '480px' }" v-if="data.length > 0"></v-chart>
+      <v-chart ref="chartRef" :option="chartOptions" :style="{ height: turtleEnabled || obvEnabled ? '640px' : '480px' }" v-if="data.length > 0"></v-chart>
       <!-- 固定情報パネル: ホバー中のローソク足の正確な価格・出来高を表示（ヘッダーでドラッグ可能） -->
       <div v-if="data.length > 0" ref="panelRef" class="info-panel" :style="panelStyle">
         <!-- ドラッグバー: ポインターはここだけ捕捉する（本体はクリック透過でクロスヘア維持） -->
@@ -110,6 +115,8 @@
               </td>
             </tr>
             <tr><th>出来高</th><td>{{ fmtVolume(hoverRecord?.volume) }}</td></tr>
+            <!-- OBV (Issue #61): OBV 表示 ON 時のみ行を表示 -->
+            <tr v-if="obvEnabled"><th>OBV</th><td>{{ fmtVolume(hoverObv) }}</td></tr>
           </tbody>
         </table>
         <!-- タートル戦略数値エリア (Issue #40): ホバー中のインデックス時点の数値を表示。
@@ -246,6 +253,8 @@ import { DISPLAY_PRESETS, chartTitle, getDisplayRange } from '../utils/display';
 // タートルズ型 (Donchian + ATR) 計算モジュール（ルックアヘッドなし: 前日までのデータのみ使用）
 import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
+// OBV (On-Balance Volume) 計算モジュール (Issue #61)
+import { computeObv } from '../utils/obv';
 // タートル戦略の銘柄ごとの保存状態（localStorage 永続化。Issue #53）
 import {
   buildTurtleState,
@@ -565,6 +574,8 @@ const movingAverage = ref<number | null>(null);
 const fetching = ref(false);
 const yahooMessage = ref('');
 const yahooError = ref(false);
+// --- OBV (On-Balance Volume) 表示トグル (Issue #61): ON 時、出来高の下に OBV パネルを追加 ---
+const obvEnabled = ref(false);
 
 // --- タートル戦略 (Donchian Channel + ATR) の状態 (Issue #53: 既定値なし・保存状態のみ使用) ---
 const turtleEnabled = ref(true);
@@ -582,6 +593,9 @@ const turtleStateMessage = ref('');
 const turtle = computed<TurtleBar[]>(() =>
   computeTurtle(data.value, { atrPeriod: atrPeriod.value }),
 );
+// OBV (On-Balance Volume) の計算結果 (Issue #61)
+// 初日 OBV = 初日出来高。①上昇日 +出来高 ②下降日 −出来高 ③同値日 不変
+const obv = computed(() => computeObv(data.value));
 // 直近の N (ATR): ATR が計算できる最新の日の値
 const latestAtr = computed<number | null>(() => {
   const rows = turtle.value;
@@ -759,6 +773,12 @@ const hoverTurtle = computed<TurtleBar | null>(() => {
   if (i === null || i < 0 || i >= turtle.value.length) return null;
   return turtle.value[i];
 });
+// 同じローソク足の OBV 値 (Issue #61)
+const hoverObv = computed<number | null>(() => {
+  const i = hoverIndex.value;
+  if (i === null || i < 0 || i >= obv.value.length) return null;
+  return obv.value[i].obv;
+});
 // 前日比（前日終値に対する終値の差と変化率）
 const hoverChange = computed<{ diff: number; pct: number } | null>(() => {
   const i = hoverIndex.value;
@@ -850,10 +870,15 @@ const chartOptions = computed<EChartsOption>(() => {
   if (records.length === 0) return {};
   const dates = records.map(d => d.date);
   const on = turtleEnabled.value;
+  const obvOn = obvEnabled.value;
   const rows = turtle.value;
   const tg = on ? targets.value : null;
-  // dataZoom が操作する X 軸インデックス（タートル表示ON時は ATR パネルの軸も含む）
-  const xAxisIndexes = on ? [0, 1, 2] : [0, 1];
+  // サブパネル数: ローソク足 + 出来高 + (タートルON時) ATR + (OBV ON時) OBV
+  const panelCount = 2 + (on ? 1 : 0) + (obvOn ? 1 : 0);
+  // OBV パネルの grid / 軸インデックス（タートル ON 時は ATR パネルが 2 に入るため 1 つずれる）
+  const obvAxisIndex = on ? 3 : 2;
+  // dataZoom が操作する X 軸インデックス（全パネル分）
+  const xAxisIndexes = Array.from({ length: panelCount }, (_, gi) => gi);
 
   // --- 系列の定義 ---
   const series: SeriesOption[] = [
@@ -928,7 +953,8 @@ const chartOptions = computed<EChartsOption>(() => {
   // y 軸 min/max 関数（下記）がデータ範囲の上下に PAD_TOP_PX / PAD_BOT_PX
   // ピクセルの余白を常に確保するため、マーカーがグリッド端で
   // 切れたりローソク足と重なったりしない。
-  const PRICE_GRID_PX = 640 * 0.45; // 上段グリッド高さ（チャート 640px × 高さ 45%）
+  // 上段グリッド高さ（チャート 640px × 上段グリッド高さ。タートル+OBV 両ON の 4 パネル時は 36%）
+  const PRICE_GRID_PX = 640 * (on && obvOn ? 0.36 : 0.45);
   const PAD_TOP_PX = 20; // グリッド上部: BUY マーカー (△) の表示余白
   const PAD_BOT_PX = 20; // グリッド下部: EXIT マーカー (▽) の表示余白
   const MARK_GAP_PX = 10; // マーカー点とローソク足高値 / 安値の間隔 (px)
@@ -938,6 +964,9 @@ const chartOptions = computed<EChartsOption>(() => {
     const pp = span / Math.max(PRICE_GRID_PX - PAD_TOP_PX - PAD_BOT_PX, 1);
     return isMax ? v.max + PAD_TOP_PX * pp : v.min - PAD_BOT_PX * pp;
   };
+  // 価格軸 (grid 0) の min/max 関数 (タートル表示 ON 時のみ使用)
+  const priceAxisMin = (v: { min: number; max: number }) => axisBound(v, false);
+  const priceAxisMax = (v: { min: number; max: number }) => axisBound(v, true);
 
   // タートル表示ON時の追加系列
   if (on) {
@@ -1104,6 +1133,23 @@ const chartOptions = computed<EChartsOption>(() => {
     }
   }
 
+  // OBV 系列 (Issue #61): 出来高の累積値（初日 OBV = 初日出来高。
+  // ①上昇日 +出来高 ②下降日 −出来高 ③同値日 不変）
+  if (obvOn) {
+    series.push({
+      name: 'OBV',
+      type: 'line',
+      xAxisIndex: obvAxisIndex,
+      yAxisIndex: obvAxisIndex,
+      data: obv.value.map(r => r.obv),
+      symbol: 'none',
+      showSymbol: false,
+      connectNulls: false,
+      lineStyle: { type: 'solid', width: 1.5, color: '#d35400' },
+      itemStyle: { color: '#d35400' },
+    });
+  }
+
   return {
     // 銘柄名タイトル (Issue #49): チャート左上に表示（grid の top 30px 余白内）
     title: {
@@ -1147,65 +1193,121 @@ const chartOptions = computed<EChartsOption>(() => {
     // ECharts 6 以降: outerBoundsMode のデフォルト 'auto' では各 grid が自身の軸ラベル幅に応じて
     // 独立してプロット領域を縮めるため、3 パネルの水平位置がズレる（Issue #59）。
     // 'none' は left/right がプロット領域を正確に定義する ECharts 5 時代の挙動。
-    grid: on
-      ? [
-          { left: 70, right: 20, top: 30, height: '45%', outerBoundsMode: 'none' },      // 上段: ローソク足
-          { left: 70, right: 20, top: '58%', height: '14%', outerBoundsMode: 'none' },   // 中段: 出来高
-          { left: 70, right: 20, bottom: 45, height: '12%', outerBoundsMode: 'none' },   // 下段: ATR（bottom 45 = 下部スライダー 0〜30px を避ける）
-        ]
-      : [
-          { left: 70, right: 20, top: 30, height: '55%', outerBoundsMode: 'none' },      // 上段: ローソク足
-          { left: 70, right: 20, bottom: 50, height: '18%', outerBoundsMode: 'none' },   // 下段: 出来高
-        ],
-    xAxis: on
-      ? [
-          { type: 'category', data: dates, gridIndex: 0 },
-          { type: 'category', data: dates, gridIndex: 1, axisLabel: { show: false } },
-          { type: 'category', data: dates, gridIndex: 2, axisLabel: { show: false } },
-        ]
-      : [
-          { type: 'category', data: dates, gridIndex: 0 },
-          {
-            type: 'category',
-            data: dates,
-            gridIndex: 1,
-            axisLabel: { show: false }, // 下段チャートの日付ラベルは非表示（上段に表示済み）
-          },
-        ],
-    yAxis: on
-      ? [
-          {
-            type: 'value',
-            gridIndex: 0,
-            // BUY/EXIT マーカー + 文字ラベル分を固定ピクセルで確保 (Issue #46)。
-            // 関数形のため dataZoom が可視ウィンドウを変えても再評価され、
-            // 可視ローソク足への自動フィット（スケール変化）は維持される。
-            min: (v: { min: number; max: number }) => axisBound(v, false),
-            max: (v: { min: number; max: number }) => axisBound(v, true),
-          },
-          {
-            type: 'value',
-            gridIndex: 1,
-            splitNumber: 2,
-            axisLabel: {
-              // 大きな数を K/M 単位でコンパクトに表示（tooltip と共通の書式）
-              formatter: (value: number) => formatCompact(value),
-            },
-          },
-          { type: 'value', scale: true, gridIndex: 2, splitNumber: 2 },
-        ]
-      : [
-          { type: 'value', scale: true, gridIndex: 0 },
-          {
-            type: 'value',
-            gridIndex: 1,
-            splitNumber: 2,
-            axisLabel: {
-              // 大きな数を K/M 単位でコンパクトに表示（tooltip と共通の書式）
-              formatter: (value: number) => formatCompact(value),
-            },
-          },
-        ],
+    grid:
+      on && obvOn
+        ? [
+            { left: 70, right: 20, top: 30, height: '36%', outerBoundsMode: 'none' },      // 上段: ローソク足
+            { left: 70, right: 20, top: '45%', height: '11%', outerBoundsMode: 'none' },   // 中1: 出来高
+            { left: 70, right: 20, top: '61%', height: '11%', outerBoundsMode: 'none' },   // 中2: ATR
+            { left: 70, right: 20, bottom: 45, height: '12%', outerBoundsMode: 'none' },   // 下段: OBV（bottom 45 = 下部スライダー 0〜30px を避ける）
+          ]
+        : on || obvOn
+          ? [
+              { left: 70, right: 20, top: 30, height: '45%', outerBoundsMode: 'none' },      // 上段: ローソク足
+              { left: 70, right: 20, top: '58%', height: '14%', outerBoundsMode: 'none' },   // 中段: 出来高
+              { left: 70, right: 20, bottom: 45, height: '12%', outerBoundsMode: 'none' },   // 下段: ATR (タートル) か OBV（bottom 45 = 下部スライダー 0〜30px を避ける）
+            ]
+          : [
+              { left: 70, right: 20, top: 30, height: '55%', outerBoundsMode: 'none' },      // 上段: ローソク足
+              { left: 70, right: 20, bottom: 50, height: '18%', outerBoundsMode: 'none' },   // 下段: 出来高
+            ],
+    xAxis: Array.from({ length: panelCount }, (_, gi) => ({
+      type: 'category' as const,
+      data: dates,
+      gridIndex: gi,
+      // サブパネルの日付ラベルは非表示（上段に表示済み）
+      axisLabel: gi > 0 ? { show: false } : undefined,
+    })),
+    yAxis:
+      obvOn
+        ? on
+          ? [
+              {
+                type: 'value',
+                gridIndex: 0,
+                // BUY/EXIT マーカー + 文字ラベル分を固定ピクセルで確保 (Issue #46)。
+                // 関数形のため dataZoom が可視ウィンドウを変えても再評価され、
+                // 可視ローソク足への自動フィット（スケール変化）は維持される。
+                min: priceAxisMin,
+                max: priceAxisMax,
+              },
+              {
+                type: 'value',
+                gridIndex: 1,
+                splitNumber: 2,
+                axisLabel: {
+                  // 大きな数を K/M 単位でコンパクトに表示（tooltip と共通の書式）
+                  formatter: (value: number) => formatCompact(value),
+                },
+              },
+              { type: 'value', scale: true, gridIndex: 2, splitNumber: 2 },
+              {
+                type: 'value',
+                gridIndex: 3,
+                scale: true,
+                splitNumber: 2,
+                axisLabel: {
+                  // OBV は累積値のため数値が大きい: K/M 単位でコンパクトに表示
+                  formatter: (value: number) => formatCompact(value),
+                },
+              },
+            ]
+          : [
+              { type: 'value', scale: true, gridIndex: 0 },
+              {
+                type: 'value',
+                gridIndex: 1,
+                splitNumber: 2,
+                axisLabel: {
+                  // 大きな数を K/M 単位でコンパクトに表示（tooltip と共通の書式）
+                  formatter: (value: number) => formatCompact(value),
+                },
+              },
+              {
+                type: 'value',
+                gridIndex: 2,
+                scale: true,
+                splitNumber: 2,
+                axisLabel: {
+                  // OBV は累積値のため数値が大きい: K/M 単位でコンパクトに表示
+                  formatter: (value: number) => formatCompact(value),
+                },
+              },
+            ]
+        : on
+          ? [
+              {
+                type: 'value',
+                gridIndex: 0,
+                // BUY/EXIT マーカー + 文字ラベル分を固定ピクセルで確保 (Issue #46)。
+                // 関数形のため dataZoom が可視ウィンドウを変えても再評価され、
+                // 可視ローソク足への自動フィット（スケール変化）は維持される。
+                min: priceAxisMin,
+                max: priceAxisMax,
+              },
+              {
+                type: 'value',
+                gridIndex: 1,
+                splitNumber: 2,
+                axisLabel: {
+                  // 大きな数を K/M 単位でコンパクトに表示（tooltip と共通の書式）
+                  formatter: (value: number) => formatCompact(value),
+                },
+              },
+              { type: 'value', scale: true, gridIndex: 2, splitNumber: 2 },
+            ]
+          : [
+              { type: 'value', scale: true, gridIndex: 0 },
+              {
+                type: 'value',
+                gridIndex: 1,
+                splitNumber: 2,
+                axisLabel: {
+                  // 大きな数を K/M 単位でコンパクトに表示（tooltip と共通の書式）
+                  formatter: (value: number) => formatCompact(value),
+                },
+              },
+            ],
     series,
   };
 });

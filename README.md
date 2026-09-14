@@ -39,8 +39,9 @@
 │   ├── frontend/               # Vue 3 フロントエンド
 │   │   ├── src/
 │   │   │   ├── App.vue
-│   │   │   ├── components/Stock.vue   # チャート + 移動平均 / タートル戦略 UI
-│   │   │   └── utils/turtle.ts        # タートルズ型 (Donchian + ATR) 計算ロジック
+│   │   │   ├── components/Stock.vue   # チャート + 移動平均 / タートル戦略 / OBV UI
+│   │   │   ├── utils/turtle.ts        # タートルズ型 (Donchian + ATR) 計算ロジック
+│   │   │   └── utils/obv.ts           # OBV (On-Balance Volume) 計算ロジック
 │   │   ├── vite.config.ts    # 開発用プロキシ（/api -> backend）
 │   │   ├── nginx.conf        # 本番用 nginx 設定（/api -> backend）
 │   │   └── Dockerfile
@@ -248,3 +249,16 @@ docker compose -f stock-app/docker-compose.yml exec db sqlite3 /data/db/stock.db
   - DC10 判定・ルックアヘッド非依存・純関数・公開インターフェース（`mult` フィールド含む）は不変（なお、ストップの買い増し到達時引き上げは Issue #56 で追加済み）
 - **テスト**（`src/utils/turtle.test.ts`）: Wilder の null / 初期値 / 再帰更新・買い増しのチェーン基準（P3 が固定された P2 ラインから更新されるケース）を追加し、ATR 変更の影響を受ける期待値を更新。ユニットテスト計 82 件パス、`npm run typecheck` / `npm run build` はパス
 - **ドキュメント**: `docs/turtle-strategy.md` の ATR / ピラミッディング / 機械的計画の記述、`Stock.vue` の買い増しマーカーコメントを新ルールに更新
+
+## 備考（Issue #61: OBV (On-Balance Volume) の計算・表示）
+
+- OBV (On-Balance Volume) を計算し、出来高パネルの下に**独立した OBV パネル**（折れ線）として表示（フロントエンドのみで計算、バックエンド / DB は変更なし）
+- **計算式**（`src/utils/obv.ts` の純関数 `computeObv`）:
+  - 初日の出来高を**最初の OBV** とする
+  - ① 当日終値 > 前日終値: `OBV[i] = OBV[i-1] + 出来高[i]`
+  - ② 当日終値 < 前日終値: `OBV[i] = OBV[i-1] − 出来高[i]`
+  - ③ 当日終値 = 前日終値: `OBV[i] = OBV[i-1]`（不変）
+  - `volume: null` の日は出来高 0 扱い（OBV はその日横ばい）
+- **描画**: OBV は出来高を累積するため値域が価格・出来高と桁違いになるため、価格 / 出来高へのオーバーレイはせず独立パネルへ配置（タートル戦略の ATR パネルと組み合わせ可能: 2〜4 グリッドの動的配置）
+- **UI**: 制御パネルに「OBV 表示」チェックボックス（既定 OFF）、固定情報パネルにホバー中の OBV 値（`fmtVolume` の桁区切り整数書式）
+- **テスト**: `src/utils/obv.test.ts`（Vitest）。初期値 / ①上昇 / ②下降 / ③同値 / null 出来高 / 空入力の各ケースと、固定シードのランダムウォーク 200 本での参照実装との回帰比較を実施
