@@ -144,6 +144,16 @@
                   {{ hoverTurtle?.buy ? 'BUY' : hoverTurtle?.exit ? 'EXIT' : '—' }}
                 </td>
               </tr>
+              <!-- OBV 検証 (Issue #63): BUY シグナル日のみ ①②③ を表示（OBV 表示トグル非依存） -->
+              <tr v-if="hoverTurtle?.buy">
+                <th>OBV検証</th>
+                <td>
+                  <span class="obv-cond" :class="hoverObvCheck?.c1 ? 'obv-ok' : 'obv-ng'">①</span>
+                  <span class="obv-cond" :class="hoverObvCheck?.c2 ? 'obv-ok' : 'obv-ng'">②</span>
+                  <span class="obv-cond" :class="hoverObvCheck?.c3 ? 'obv-ok' : 'obv-ng'">③</span>
+                  <span v-if="hoverObvCheck?.all" class="obv-all">★</span>
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -194,6 +204,21 @@
         <button type="button" :disabled="!isValidSymbol(currentTurtleSymbol)" @click="saveCurrentTurtleState">状態を保存</button>
         <button type="button" :disabled="!hasSavedTurtleState" @click="releaseCurrentTurtleState">状態を解除</button>
         <span v-if="turtleStateMessage" style="font-size:.8rem;color:#6b7280;">{{ turtleStateMessage }}</span>
+      </div>
+      <!-- OBV 検証 (Issue #63): 選択ブレイク日の ①②③ 条件結果を表示（OBV 表示トグル非依存）。
+           全条件満たしのブレイクはチャート上、BUY マーカーが金色三角で識別される -->
+      <div v-if="selectedBreakoutObvCheck !== null" class="obv-check-row">
+        <span class="obv-check-label">OBV検証 ({{ selectedBreakoutObvCheck.date }})</span>
+        <span class="obv-cond" :class="selectedBreakoutObvCheck.c1 ? 'obv-ok' : 'obv-ng'">
+          ① OBV 20日最高値更新 {{ selectedBreakoutObvCheck.c1 ? '✓' : '✗' }}
+        </span>
+        <span class="obv-cond" :class="selectedBreakoutObvCheck.c2 ? 'obv-ok' : 'obv-ng'">
+          ② {{ selectedBreakoutObvCheck.daysSinceLastBreakout === null ? 'BUY 履歴なし' : `前回BUYから ${selectedBreakoutObvCheck.daysSinceLastBreakout} 日` }} {{ selectedBreakoutObvCheck.c2 ? '✓' : '✗' }}
+        </span>
+        <span class="obv-cond" :class="selectedBreakoutObvCheck.c3 ? 'obv-ok' : 'obv-ng'">
+          ③ 直近5日に OBV 高値更新 {{ selectedBreakoutObvCheck.c3 ? '✓' : '✗' }}
+        </span>
+        <span v-if="selectedBreakoutObvCheck.all" class="obv-all">★ 全条件有効（チャート: 金色三角）</span>
       </div>
       <table v-if="turtleEnabled && latestAtr !== null" class="turtle-table">
         <tbody>
@@ -253,8 +278,9 @@ import { DISPLAY_PRESETS, chartTitle, getDisplayRange } from '../utils/display';
 // タートルズ型 (Donchian + ATR) 計算モジュール（ルックアヘッドなし: 前日までのデータのみ使用）
 import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
-// OBV (On-Balance Volume) 計算モジュール (Issue #61)
-import { computeObv } from '../utils/obv';
+// OBV (On-Balance Volume) 計算モジュール (Issue #61 / タートル BUY ブレイクの OBV 検証 Issue #63)
+import { computeObv, computeBreakoutObvChecks } from '../utils/obv';
+import type { BreakoutObvCheck } from '../utils/obv';
 // タートル戦略の銘柄ごとの保存状態（localStorage 永続化。Issue #53）
 import {
   buildTurtleState,
@@ -643,6 +669,18 @@ const unitShares = computed<number>(() => {
 const buySignalDates = computed<string[]>(() =>
   turtle.value.filter(r => r.buy).map(r => r.date),
 );
+// OBV 検証 (Issue #63): 全 BUY シグナル日について ①②③ 条件を評価（日付をキーに持つ Map）。
+// チャートの BUY マーカー色分け・タートルパネル / 情報パネルの OBV 検証表示に使用する。
+// OBV 表示トグル (obvEnabled) には依存しない（データがあれば常に利用可能）。
+const breakoutObvChecks = computed(() =>
+  computeBreakoutObvChecks(data.value, obv.value, buySignalDates.value),
+);
+// 選択中のブレイク日の OBV 検証結果（BUY シグナル日でなければ null）
+const selectedBreakoutObvCheck = computed<BreakoutObvCheck | null>(() => {
+  const d = turtleBreakoutDate.value;
+  if (d === null) return null;
+  return breakoutObvChecks.value.get(d) ?? null;
+});
 // タートル計画: ブレイク日以降の買い増し (P2/P3/P4) と EXIT を機械的にシミュレートする
 // （毎日その日の N で目標・ストップを再計算。詳細は turtle.ts の computeTurtlePlan 参照）
 const turtlePlan = computed<TurtlePlan | null>(() => {
@@ -778,6 +816,12 @@ const hoverObv = computed<number | null>(() => {
   const i = hoverIndex.value;
   if (i === null || i < 0 || i >= obv.value.length) return null;
   return obv.value[i].obv;
+});
+// 同じローソク足の OBV 検証結果 (Issue #63、BUY シグナル日のみ)
+const hoverObvCheck = computed<BreakoutObvCheck | null>(() => {
+  const t = hoverTurtle.value;
+  if (!t?.buy) return null;
+  return breakoutObvChecks.value.get(t.date) ?? null;
 });
 // 前日比（前日終値に対する終値の差と変化率）
 const hoverChange = computed<{ diff: number; pct: number } | null>(() => {
@@ -1030,6 +1074,7 @@ const chartOptions = computed<EChartsOption>(() => {
       },
       {
         // BUY マーカー: 終値がエントリーラインを上抜けした日（日本式: 赤）
+        // OBV 検証 (Issue #63) で ①②③ 全条件を満たすブレイクは金色三角で識別。
         // ローソク足の高値より MARK_GAP_PX ピクセル上側に配置 (Issue #46)
         name: 'BUY',
         type: 'scatter',
@@ -1038,7 +1083,11 @@ const chartOptions = computed<EChartsOption>(() => {
         data: rows.map((r, i) => {
           if (!r.buy) return null;
           const high = Number(records[i].high ?? records[i].close);
-          return high + markerGapPrice;
+          const allOk = breakoutObvChecks.value.get(r.date)?.all === true;
+          return {
+            value: high + markerGapPrice,
+            itemStyle: { color: allOk ? '#d4a017' : '#e2534f' },
+          };
         }),
         symbol: 'triangle',
         symbolSize: 12,
@@ -1612,4 +1661,17 @@ onMounted(() => {
   padding:.2rem .5rem; background:#fdf1e3; color:#9c5a00;
   font-weight:bold; font-size:.8rem;
 }
+/* --- OBV 検証チップ (Issue #63): タートルパネル / 情報パネルの ①②③ 表示 --- */
+.obv-cond {
+  display:inline-block; padding:0 .35rem; margin-right:.3rem;
+  border:1px solid; border-radius:.25rem; font-size:.82rem; white-space:nowrap;
+}
+.obv-ok { background:#e3f4e3; border-color:#a5d6a7; color:#2c7a2c; }
+.obv-ng { background:#fdecea; border-color:#f2b8b1; color:#c0392b; }
+.obv-all { color:#b8860b; font-weight:bold; font-size:.85rem; }
+.obv-check-row {
+  display:flex; gap:.5rem; align-items:center; flex-wrap:wrap;
+  margin-top:.5rem; font-size:.88rem;
+}
+.obv-check-label { font-weight:bold; }
 </style>
