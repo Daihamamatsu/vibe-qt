@@ -1144,15 +1144,18 @@ const chartOptions = computed<EChartsOption>(() => {
         minSpan: 2, // 最小表示幅（inside と同一。ハンドルを同一点に寄せて単一ローソク化するのを防ぐ）
       },
     ],
+    // ECharts 6 以降: outerBoundsMode のデフォルト 'auto' では各 grid が自身の軸ラベル幅に応じて
+    // 独立してプロット領域を縮めるため、3 パネルの水平位置がズレる（Issue #59）。
+    // 'none' は left/right がプロット領域を正確に定義する ECharts 5 時代の挙動。
     grid: on
       ? [
-          { left: 70, right: 20, top: 30, height: '45%' },      // 上段: ローソク足
-          { left: 70, right: 20, top: '58%', height: '14%' },   // 中段: 出来高
-          { left: 70, right: 20, bottom: 45, height: '12%' },   // 下段: ATR（bottom 45 = 下部スライダー 0〜30px を避ける）
+          { left: 70, right: 20, top: 30, height: '45%', outerBoundsMode: 'none' },      // 上段: ローソク足
+          { left: 70, right: 20, top: '58%', height: '14%', outerBoundsMode: 'none' },   // 中段: 出来高
+          { left: 70, right: 20, bottom: 45, height: '12%', outerBoundsMode: 'none' },   // 下段: ATR（bottom 45 = 下部スライダー 0〜30px を避ける）
         ]
       : [
-          { left: 70, right: 20, top: 30, height: '55%' },      // 上段: ローソク足
-          { left: 70, right: 20, bottom: 50, height: '18%' },   // 下段: 出来高
+          { left: 70, right: 20, top: 30, height: '55%', outerBoundsMode: 'none' },      // 上段: ローソク足
+          { left: 70, right: 20, bottom: 50, height: '18%', outerBoundsMode: 'none' },   // 下段: 出来高
         ],
     xAxis: on
       ? [
