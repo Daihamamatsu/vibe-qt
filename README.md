@@ -35,6 +35,7 @@
 │   │   ├── stockapp/           # プロジェクト（settings, urls, wsgi）
 │   │   │   └── app/            # StockRecord モデル / ViewSet / シリアライザー
 │   │   ├── db/                 # SQLite DB ファイルの置き場（コミットしない）
+│   │   ├── data/               # データファイル（東証上場銘柄リスト CSV 等）
 │   │   └── Dockerfile
 │   ├── frontend/               # Vue 3 フロントエンド
 │   │   ├── src/
@@ -47,6 +48,7 @@
 │   │   └── Dockerfile
 │   └── docker-compose.yml
 ├── tests/test_api.py           # API テスト（pytest + pytest-django）
+├── tests/test_tickers.py       # 銘柄リスト CSV / 一括取得テスト（Issue #65）
 ├── postman/                    # Postman コレクション
 ├── pytest.ini
 └── requirements-dev.txt        # テスト実行用依存関係
@@ -93,6 +95,30 @@ npm install
 npm run dev
 # http://localhost:5173 で起動。/api は自動的に http://localhost:8000 へプロキシ
 ```
+
+### 全銘柄株価の一括取得（管理コマンド / Issue #65）
+
+東証上場銘柄リスト CSV（`backend/data/data_j.csv`、2026 年 8 月末時点 4,441 銘柄）を同梱しており、管理コマンドで全銘柄の日足株価を一括取得・登録できる:
+
+```bash
+# Docker Compose 実行中
+docker compose exec backend python manage.py fetch_tickers_j
+
+# ローカル実行中（方法 2）
+cd stock-app/backend
+python manage.py fetch_tickers_j
+```
+
+| オプション | 既定 | 説明 |
+|---|---|---|
+| `--csv` | `backend/data/data_j.csv` | 銘柄リスト CSV のパス |
+| `--period` | `1y` | 取得期間（5d / 1mo / 3mo / 6mo / 1y / 2y / 5y） |
+| `--limit` | （なし） | 先頭 N 件の銘柄のみ処理（動作確認用: `--limit 5`） |
+| `--sleep` | `0.5` | 銘柄間の待機秒数（Yahoo Finance のレート制限対策） |
+
+- 東証コードは Yahoo Finance のシンボルへ変換して取得（`1301` → `1301.T`）。銘柄名は CSV 側を `StockMeta` に保存する
+- データのない銘柄（ETF・ETN に多い）と取得失敗はサマリに集計して処理を継続する。再実行は upsert のため安全（中断後の再開・差分更新に使える）
+- 全銘柄（4,441 件）の実行はネットワーク状況で 1〜3 時間程度かかるため、バックグラウンドでの実行を推奨（例: `docker compose exec -d backend python manage.py fetch_tickers_j`）
 
 ## API リファレンス
 
@@ -277,3 +303,15 @@ docker compose -f stock-app/docker-compose.yml exec db sqlite3 /data/db/stock.db
   - チャート: BUY scatter シリーズのデータ項目単位で `itemStyle` を指定 — ①②③ 全て満たし = 金色 (`#d4a017`)、それ以外 = 従来どおり赤 (`#e2534f`)
   - これらの表示は「OBV 表示」トグル（`obvEnabled`）に**依存しない**（データがあれば常に有効）
 - **テスト**: `src/utils/obv.test.ts` に ①②③ 条件の境界値・ブレイク日自身の OBV 更新の除外・全有効ケース・日付キー Map API のケースを追加。ユニットテスト計 111 件パス、`npm run typecheck` / `npm run build` はパス
+
+## 備考（Issue #65: 東証上場銘柄リスト（CSV）を取り込み、全銘柄の直近 1 年株価を DB へ一括登録する管理コマンドを追加）
+
+- 東証「上場銘柄一覧」（2026 年 8 月末時点 4,441 銘柄: プライム 1,556 / スタンダード 1,555 / グロース 596 / PRO Market 187 / ETF・ETN 477 / REIT 等 63 / 外国株式 5 / 出資証券 2）を CSV 化して同梱（`stock-app/backend/data/data_j.csv`、UTF-8・ヘッダあり・全 10 列）。元データ（xlsx）はプロジェクト外に保持し CSV のみコミット
+- 新規管理コマンド `fetch_tickers_j`（`app/management/commands/fetch_tickers_j.py` + サービス `app/tickers.py`）:
+  - 銘柄リスト CSV を読み、東証 4 桁コードを Yahoo シンボルへ変換（`1301` → `1301.T`）して日足 OHLCV を一括取得し `StockRecord` に upsert
+  - 銘柄名は CSV 側のを `StockMeta` に保存（Yahoo `.info` 参照をスキップ → 1 銘柄あたり HTTP 往復を削減）
+  - データなし（ETF・ETN に多い）/ 取得失敗はサマリに集計して継続。銘柄間は `--sleep` 秒（既定 0.5）待機でレート制限対策。オプション: `--csv` / `--period`（既定 1y）/ `--limit` / `--sleep`
+  - upsert 意味論のため再実行安全（中断後の再開・差分更新に使える）。全 4,441 銘柄の実行は 1〜3 時間程度の見込み
+- リファクタ: `yahoo.fetch_and_save` の DB upsert 部分を `save_ohlcv_rows()` として切り出し一括取得と共有（挙動不変、既存テストで回帰なしを確認）
+- テスト: `tests/test_tickers.py`（CSV 読込 / コード変換 / upsert / 一括取得の成功・データなし・失敗継続 / 管理コマンド）。pytest 計 67 件パス
+

@@ -105,14 +105,15 @@ def upsert_stock_meta(symbol: str, name: str) -> None:
     FavoriteStock.objects.filter(symbol=symbol).update(name=name)
 
 
-def fetch_and_save(symbol: str, period: str = '1mo') -> dict:
-    """Yahoo Finance から日足 OHLC を取得して DB に upsert する。
+def save_ohlcv_rows(symbol: str, rows: list) -> tuple:
+    """日足 OHLCV 行を StockRecord に upsert する。
 
+    rows は (date, open, high, low, close, volume) のリスト（日付昇順）。
     既存の (symbol, date) レコードは更新、新規レコードは一括作成する。
+    (作成数, 更新数) を返す。
     """
-    from .models import StockMeta, StockRecord
+    from .models import StockRecord
 
-    rows = fetch_ohlcv(symbol, period)
     dates = [row[0] for row in rows]
     existing = {
         record.date: record
@@ -138,6 +139,16 @@ def fetch_and_save(symbol: str, period: str = '1mo') -> dict:
             updated += 1
     if to_create:
         StockRecord.objects.bulk_create(to_create)
+    return len(to_create), updated
+
+
+def fetch_and_save(symbol: str, period: str = '1mo') -> dict:
+    """Yahoo Finance から日足 OHLC を取得して DB に upsert する。
+
+    既存の (symbol, date) レコードは更新、新規レコードは一括作成する。
+    """
+    rows = fetch_ohlcv(symbol, period)
+    created, updated = save_ohlcv_rows(symbol, rows)
 
     # 銘柄名を取得してキャッシュ（best effort: 銘柄名取得の失敗が株価保存を妨げない）(Issue #49, #50)
     # upsert_stock_meta によりお気に入り銘柄の name も StockMeta と同期される
@@ -147,7 +158,7 @@ def fetch_and_save(symbol: str, period: str = '1mo') -> dict:
         'symbol': symbol,
         'period': period,
         'fetched': len(rows),
-        'created': len(to_create),
+        'created': created,
         'updated': updated,
         'start_date': rows[0][0].isoformat(),
         'end_date': rows[-1][0].isoformat(),
