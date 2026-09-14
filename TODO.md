@@ -61,3 +61,16 @@
 - [x] `npm test`（29 件パス）/ `npm run typecheck` / `npm run build` を実行
 - [x] `docs/turtle-strategy.md` と `README.md` を更新
 
+## Issue #63 タートル BUY ブレイクの OBV 検証
+
+- [x] `src/utils/obv.ts`: OBV 検証ヘルパー追加（純粋関数・ルックアヘッドなし）
+  - `computeObv20DayHighs`: OBV 20 日間最高値更新日（厳密 `>`、履歴 20 日未満は対象外）
+  - `evaluateBreakoutObv` / `computeBreakoutObvChecks`: BUY シグナル日の ①②③ 条件評価（単日 / 全日 Map）
+- [x] `src/utils/obv.test.ts`: ユニットテスト追加（① 境界 / ② 20 日境界 / ③ 直前ウィンドウ / ブレイク日自身の OBV 更新を除外 / 全有効ケース / Map API）
+- [x] タートルパネル: 選択ブレイク日の OBV 検証行（①②③ を ✓/✗、全有効時は ★）
+- [x] 固定情報パネル: BUY シグナル日ホバー時に ①②③ カラーチップ（全有効で ★）
+- [x] チャート: ①②③ 全条件を満たすブレイクの BUY マーカーを金色三角で識別（それ以外は赤）
+- [x] OBV 検証の表示は OBV 表示トグル (obvEnabled) に非依存
+- [x] `npm test`（111 件パス）/ `npm run typecheck` / `npm run build` を実行
+- [x] `README.md` と `docs/turtle-strategy.md` を更新
+
