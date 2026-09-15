@@ -315,3 +315,16 @@ docker compose -f stock-app/docker-compose.yml exec db sqlite3 /data/db/stock.db
 - リファクタ: `yahoo.fetch_and_save` の DB upsert 部分を `save_ohlcv_rows()` として切り出し一括取得と共有（挙動不変、既存テストで回帰なしを確認）
 - テスト: `tests/test_tickers.py`（CSV 読込 / コード変換 / upsert / 一括取得の成功・データなし・失敗継続 / 管理コマンド）。pytest 計 67 件パス
 
+## 備考（修正: 同日（イントレーダ）の株価レコードが引け後の最終終値・出来高に更新されない問題）
+
+- **原因**: バックエンドの upsert（`save_ohlcv_rows`）は正常（既存の同日レコードを引け後値で上書きすることを単体テストで実証済み）だったが、フロントエンドの「取得」ボタン（`fetchStockData`）が `GET /api/stocks/<symbol>/`（DB のみ）を呼び出すだけで Yahoo Finance へ再取得する経路がなく、日中（引け前）に保存したイントレーダースナップショットが引け後でも更新されないまま残っていた
+- **修正**（`Stock.vue`）:
+  - 「取得」ボタン押下時、DB 読み込み後、**最新レコードが直近 7 日以内の日付**（週末・祝日・米株のタイムゾーンズレを吸収。`src/utils/freshness.ts` の `shouldAutoRefreshYahoo`）であれば、Yahoo Finance へ一度だけ自動リフレッシュする。引け後に Yahoo は当日の最終終値・出来高を返し、バックエンドの upsert が既存の同日行を上書きするため、チャートに引け後最終値が反映される
+  - 古いデータ / 無データでは Yahoo リクエストを行わない（レート制限対策）。この場合は従来通り「Yahoo Finance から取得」ボタンで補完する
+  - Yahoo 取得本体は `refreshFromYahoo()` として抽出し、Yahoo ボタンと自動リフレッシュで共有（`fetching` フラグによる二重実行ガード、失敗時は DB データを維持した優雅な劣化）
+  - 「取得」ボタンに `:disabled="fetching"` を追加し、更新中の二重クリックを防止
+- **テスト**:
+  - バックエンド `tests/test_yahoo.py`: `save_ohlcv_rows` が既存の同日（イントレーダ）行を引け後最終値で上書きすること（実害の値 8306.T / 2026-09-15 で close 3689 → 3668、volume 21,892,300 → 41,635,100 を検証）、`fetch_and_save` が同日を update かつ翌日以降のみ create すること（オフラインの monkeypatch 使用）を追加
+  - フロントエンド `src/utils/freshness.test.ts`（Vitest）: 自動リフレッシュ判定の日付境界（当日 / 前日 / 週末ギャップ / 7 日前境界 / 8 日前超 / 無データ / recentDays 指定）を検証
+- **運用メモ**: 一括登録した全銘柄の同日行をまとめて引け後値へ更新する場合は、引け後に `python manage.py fetch_tickers_j --period 5d` を再実行する（upsert 意味論で再実行安全）
+
