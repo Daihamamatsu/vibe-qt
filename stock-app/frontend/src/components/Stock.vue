@@ -37,7 +37,7 @@
           <input type="checkbox" v-model="obvEnabled" />
           OBV 表示
         </label>
-        <button @click="fetchStockData">取得</button>
+        <button :disabled="fetching" @click="fetchStockData">取得</button>
         <button :disabled="fetching" @click="fetchFromYahoo">Yahoo Finance から取得</button>
       </div>
       <!-- Yahoo Finance 取得ステータス -->
@@ -275,6 +275,8 @@ import { BarChart, CandlestickChart, LineChart, ScatterChart } from 'echarts/cha
 import { TooltipComponent, GridComponent, DataZoomComponent, TitleComponent } from 'echarts/components';
 // 表示ウィンドウ（表示期間 / ローソク足本数）計算モジュール
 import { DISPLAY_PRESETS, chartTitle, getDisplayRange } from '../utils/display';
+// 引け後自動リフレッシュ判定モジュール（同日レコードを引け後最終値へ更新する）
+import { shouldAutoRefreshYahoo } from '../utils/freshness';
 // タートルズ型 (Donchian + ATR) 計算モジュール（ルックアヘッドなし: 前日までのデータのみ使用）
 import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
@@ -1361,14 +1363,32 @@ const chartOptions = computed<EChartsOption>(() => {
   };
 });
 
+// DB から保存済みデータをチャートへ読み込む（Yahoo Finance には問い合わせない）。
+// 日付昇順（古い順）に整えて返す。
+async function loadStockDataFromDb(): Promise<StockRecord[]> {
+  const res = await axios.get(`/api/stocks/${symbol.value.trim()}`);
+  // 日付昇順（古い順）でチャートに表示する
+  return (res.data as StockRecord[]).sort((a, b) => a.date.localeCompare(b.date));
+}
+
 async function fetchStockData() {
+  if (fetching.value) return; // 既に Yahoo 更新中なら二重リクエストしない
+  let records: StockRecord[];
   try {
-    const res = await axios.get(`/api/stocks/${symbol.value.trim()}`);
-    // 日付昇順（古い順）でチャートに表示する
-    const records = (res.data as StockRecord[]).sort((a, b) => a.date.localeCompare(b.date));
-    data.value = records;
+    records = await loadStockDataFromDb();
   } catch (e) {
     console.error('データ取得エラー:', e);
+    return;
+  }
+  data.value = records;
+  // 引け後自動リフレッシュ: 最新レコードが最近の日付（直近 7 日以内）なら、
+  // それが日中（引け前）のイントレーダースナップショットかもしれないため
+  // Yahoo Finance へ一度だけ再取得する。引け後に Yahoo は当日の最終
+  // 終値・出来高を返し、バックエンドの upsert が既存の同日行を上書きする。
+  // 古いデータ / 無データでは Yahoo リクエストを行わない（レート制限対策）。
+  const latest = records[records.length - 1];
+  if (shouldAutoRefreshYahoo(latest?.date)) {
+    await refreshFromYahoo();
   }
 }
 
@@ -1540,8 +1560,18 @@ async function deleteActiveList(listId: number | null) {
 }
 
 async function fetchFromYahoo() {
+  // Yahoo ボタンは refreshFromYahoo の別名（取得ボタンの引け後自動リフレッシュと同一経路）
+  await refreshFromYahoo();
+}
+
+// Yahoo Finance から取得して DB に保存し、結果をチャートへ反映する。
+// 「Yahoo Finance から取得」ボタンと、引け後自動リフレッシュで共有する。
+// 既に実行中の場合は何もしない（二重クリック / 並行呼び出しの重複防止）。
+// 成功で true、スキップ・失敗で false を返す。
+async function refreshFromYahoo(): Promise<boolean> {
+  if (fetching.value) return false;
   const target = symbol.value.trim();
-  if (!target) return;
+  if (!target) return false;
   fetching.value = true;
   yahooError.value = false;
   yahooMessage.value = `${target}（${period.value}）を Yahoo Finance から取得中...`;
@@ -1552,15 +1582,17 @@ async function fetchFromYahoo() {
       `${r.symbol} の株価 ${r.fetched} 件を取得して保存しました` +
       `（新規 ${r.created} 件 / 更新 ${r.updated} 件、${r.start_date} 〜 ${r.end_date}）`;
     // 保存されたデータを DB から読み直してチャートに反映
-    await fetchStockData();
+    data.value = await loadStockDataFromDb();
     // 直前に最新データを保存したばかりなので銘柄名も再取得 (Issue #49)
     void fetchStockMeta();
     // お気に入り銘柄の名称は StockMeta と同期されるため一覧も再取得 (Issue #50)
     void fetchFavorites();
+    return true;
   } catch (e: any) {
     const detail = e?.response?.data?.detail ?? e?.message ?? 'リクエストに失敗しました';
     yahooError.value = true;
     yahooMessage.value = `株価取得に失敗しました: ${detail}`;
+    return false;
   } finally {
     fetching.value = false;
   }
