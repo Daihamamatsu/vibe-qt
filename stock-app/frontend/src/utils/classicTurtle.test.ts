@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { Bar } from './turtle';
 import {
   backtestClassicTurtle,
+  computeClassicTurtleSqn,
   computeClassicTurtleIndicators,
   computeClassicUnitShares,
+  filterClassicTurtleTrades,
 } from './classicTurtle';
+import type { ClassicTurtleTrade } from './classicTurtle';
 
 function bar(i: number, close: number, high = close, low = close, open = close): Bar {
   return {
@@ -52,6 +55,75 @@ describe('computeClassicUnitShares', () => {
     expect(computeClassicUnitShares(1_000_000, 2)).toBe(5000);
     expect(computeClassicUnitShares(1_000_000, 2, 5, 10)).toBe(1000);
     expect(computeClassicUnitShares(0, 2)).toBe(0);
+  });
+});
+
+describe('computeClassicTurtleSqn', () => {
+  it('完了取引のR倍率から標本標準偏差を使ってSQNを計算する', () => {
+    const trades = [-1, 0, 1, 2].map((riskMultiple, index) => ({
+      system: 'system1' as const,
+      side: 'long' as const,
+      entries: [{
+        date: `2026-02-${String(index + 1).padStart(2, '0')}`,
+        side: 'long' as const,
+        price: 100,
+        shares: 1,
+        unit: 1,
+        n: 1,
+        kind: 'initial' as const,
+      }],
+      exit: {
+        date: `2026-02-${String(index + 2).padStart(2, '0')}`,
+        price: 100,
+        reason: 'channel' as const,
+      },
+      pnl: 0,
+      riskMultiple,
+    }));
+
+    const sqn = computeClassicTurtleSqn(trades);
+
+    expect(sqn?.tradeCount).toBe(4);
+    expect(sqn?.meanRiskMultiple).toBe(0.5);
+    expect(sqn?.standardDeviation).toBeCloseTo(Math.sqrt(5 / 3));
+    expect(sqn?.value).toBeCloseTo(0.5 * 2 / Math.sqrt(5 / 3));
+  });
+
+  it('未決済取引、取引数不足、標準偏差ゼロはSQN対象外にする', () => {
+    const baseTrade = {
+      system: 'system1' as const,
+      side: 'long' as const,
+      entries: [],
+      pnl: 0,
+      riskMultiple: 1,
+    };
+    expect(computeClassicTurtleSqn([{ ...baseTrade, exit: null }])).toBeNull();
+    expect(computeClassicTurtleSqn([{
+      ...baseTrade,
+      exit: { date: '2026-02-02', price: 100, reason: 'channel' as const },
+    }])).toBeNull();
+    expect(computeClassicTurtleSqn([
+      { ...baseTrade, exit: { date: '2026-02-02', price: 100, reason: 'channel' as const } },
+      { ...baseTrade, exit: { date: '2026-02-03', price: 100, reason: 'channel' as const } },
+    ])).toBeNull();
+  });
+});
+
+describe('filterClassicTurtleTrades', () => {
+  const trade = (side: 'long' | 'short'): ClassicTurtleTrade => ({
+    system: 'system1',
+    side,
+    entries: [],
+    exit: null,
+    pnl: 0,
+    riskMultiple: 0,
+  });
+  const trades = [trade('long'), trade('short'), trade('long')];
+
+  it('ロングのみ、ショートのみ、両方を切り替えられる', () => {
+    expect(filterClassicTurtleTrades(trades, 'long').map(trade => trade.side)).toEqual(['long', 'long']);
+    expect(filterClassicTurtleTrades(trades, 'short').map(trade => trade.side)).toEqual(['short']);
+    expect(filterClassicTurtleTrades(trades, 'both')).toBe(trades);
   });
 });
 

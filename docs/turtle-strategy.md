@@ -53,6 +53,18 @@
 - `open/high/low` が null のレコードは `close` にフォールバックします。
 - BUY と EXIT が同日に同時に立つことはありません（ユニットテストで保証済み）。
 
+### SQN と取引履歴の期間指定
+
+古典タートルズパネルでは、System 1 / System 2、取引方向（ロングのみ / ショートのみ / 両方）、取引履歴の開始日・終了日を指定できます。取引方向の既定値は両方、日付は両方が空欄で、従来どおり全期間・全方向の取引履歴を表示します。期間を指定すると、初回エントリー日がその期間内にある取引だけを履歴、完了取引数、損益、SQN の対象にします。System 1 / System 2 と取引方向の選択も同時に適用されます。
+
+SQN は完了済み取引の `R`（`riskMultiple`）を使い、次の式で計算します。
+
+```text
+SQN = 平均R × √取引数 ÷ Rの標本標準偏差
+```
+
+未決済取引は SQN から除外します。対象取引が 2 件未満、または R の標準偏差が 0 の場合は SQN を表示しません。SQN は取引数が少ない期間では安定しにくいため、複数の相場局面を含む期間で確認してください。
+
 ## 3. 使い方（UI 操作手順）
 
 1. **データを取得する**: 「株価データ」パネルでシンボル（例: `AAPL`）・期間（1y 以上推奨）を指定して **取得**（DB）または **Yahoo Finance から取得** を押す。
@@ -153,6 +165,7 @@ npm run typecheck # 型チェック
 | ファイル | 内容 |
 |---|---|
 | `stock-app/frontend/src/utils/turtle.ts` | `computeTurtle`（バンド / ATR / BUY・EXIT）、`computeUnitShares`（1 ユニット株数）、`computePyramidTargets`（ピラミッド目標 / ストップ）、`computeTurtlePlan`（買い増し / EXIT の機械的計画） |
+| `stock-app/frontend/src/utils/classicTurtle.ts` | 古典タートルズのバックテスト、取引履歴、`computeClassicTurtleSqn`（R倍率によるSQN） |
 | `stock-app/frontend/src/utils/obv.ts` | OBV 計算（`computeObv`、Issue #61）と BUY ブレイクの OBV 検証 ①②③（Issue #63） |
 | `stock-app/frontend/src/components/Stock.vue` | タートルパネル UI と ECharts 描画（DC20/DC10、BUY/EXIT マーカー、ATR パネル、markLine、買い増し / 計画 EXIT マーカー） |
 | `stock-app/frontend/src/utils/turtle.test.ts` | vitest によるロジック検証 |
