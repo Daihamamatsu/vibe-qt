@@ -56,6 +56,58 @@ describe('computeClassicUnitShares', () => {
 });
 
 describe('backtestClassicTurtle', () => {
+  it('最終日まで保有したポジションを強制決済せず、評価損益と保有状態を維持する', () => {
+    const bars = [
+      bar(0, 10, 11, 9),
+      bar(1, 10, 11, 9),
+      bar(2, 12, 12, 12), // S1 long entry
+      bar(3, 13, 13, 12), // 決済条件なし
+    ];
+    const result = backtestClassicTurtle(bars, {
+      nPeriod: 2,
+      accountEquity: 100_000,
+      system1EntryDays: 2,
+      system1ExitDays: 2,
+      system2EntryDays: 5,
+      system2ExitDays: 2,
+    });
+
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0].exit).toBeNull();
+    expect(result.trades[0].pnl).toBeGreaterThan(0);
+    const lastDay = result.days[result.days.length - 1];
+    expect(lastDay.date).toBe('2026-01-04');
+    expect(lastDay.exit).toBeNull();
+    expect(lastDay.position).not.toBeNull();
+  });
+
+  it('日付降順の入力でも日付昇順の入力と同じ結果を返す', () => {
+    const bars = [
+      bar(0, 10, 11, 9),
+      bar(1, 10, 11, 9),
+      bar(2, 12, 12, 12),
+      bar(3, 13, 13, 12),
+    ];
+    const params = {
+      nPeriod: 2,
+      accountEquity: 100_000,
+      system1EntryDays: 2,
+      system1ExitDays: 2,
+      system2EntryDays: 5,
+      system2ExitDays: 2,
+    };
+    const ascending = backtestClassicTurtle(bars, params);
+    const descending = backtestClassicTurtle([...bars].reverse(), params);
+
+    expect(descending.indicators.map(row => row.date)).toEqual(
+      ascending.indicators.map(row => row.date),
+    );
+    expect(descending.days.map(day => day.date)).toEqual(
+      ascending.days.map(day => day.date),
+    );
+    expect(descending.trades).toEqual(ascending.trades);
+  });
+
   it('ロングSystem 1をエントリーし、0.5Nごとに最大4ユニット追加する', () => {
     const bars = [
       bar(0, 10, 11, 9),
