@@ -1217,6 +1217,10 @@ const chartOptions = computed<EChartsOption>(() => {
       if (classicTurtleSystem.value !== 'system1') widenRange(row.system2LongEntry);
       if (classicTurtleSystem.value !== 'system2') widenRange(row.system1ShortEntry);
       if (classicTurtleSystem.value !== 'system1') widenRange(row.system2ShortEntry);
+      if (classicTurtleSystem.value !== 'system2') widenRange(row.system1LongExit);
+      if (classicTurtleSystem.value !== 'system2') widenRange(row.system1ShortExit);
+      if (classicTurtleSystem.value !== 'system1') widenRange(row.system2LongExit);
+      if (classicTurtleSystem.value !== 'system1') widenRange(row.system2ShortExit);
     }
     for (const trade of classicVisibleTrades.value) {
       for (const entry of trade.entries) widenRange(entry.price);
@@ -1412,7 +1416,12 @@ const chartOptions = computed<EChartsOption>(() => {
 
     const classic = classicTurtle.value;
     const showSystem = (system: TurtleSystem) => classicTurtleSystem.value === 'both' || classicTurtleSystem.value === system;
-    const addClassicLine = (name: string, values: (number | null)[], color: string) => {
+    const addClassicLine = (
+      name: string,
+      values: (number | null)[],
+      color: string,
+      lineType: 'dotted' | 'dashed' = 'dotted',
+    ) => {
       series.push({
         name,
         type: 'line',
@@ -1422,17 +1431,21 @@ const chartOptions = computed<EChartsOption>(() => {
         symbol: 'none',
         showSymbol: false,
         connectNulls: false,
-        lineStyle: { type: 'dotted', width: 1.2, color },
+        lineStyle: { type: lineType, width: lineType === 'dashed' ? 1.4 : 1.2, color },
         itemStyle: { color },
       });
     };
     if (showSystem('system1')) {
       addClassicLine('古典 S1 DC20 上限', classic.indicators.map(row => row.system1LongEntry), '#c0392b');
       addClassicLine('古典 S1 DC20 下限', classic.indicators.map(row => row.system1ShortEntry), '#c0392b');
+      addClassicLine('古典 S1 決済10 下限', classic.indicators.map(row => row.system1LongExit), '#e74c3c', 'dashed');
+      addClassicLine('古典 S1 決済10 上限', classic.indicators.map(row => row.system1ShortExit), '#e74c3c', 'dashed');
     }
     if (showSystem('system2')) {
       addClassicLine('古典 S2 DC55 上限', classic.indicators.map(row => row.system2LongEntry), '#8e44ad');
       addClassicLine('古典 S2 DC55 下限', classic.indicators.map(row => row.system2ShortEntry), '#8e44ad');
+      addClassicLine('古典 S2 決済20 下限', classic.indicators.map(row => row.system2LongExit), '#9b59b6', 'dashed');
+      addClassicLine('古典 S2 決済20 上限', classic.indicators.map(row => row.system2ShortExit), '#9b59b6', 'dashed');
     }
     const entries = classicVisibleTrades.value.flatMap(trade => trade.entries.map(entry => ({ trade, entry })));
     const exits = classicVisibleTrades.value
