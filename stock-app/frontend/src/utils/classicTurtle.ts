@@ -131,6 +131,18 @@ export function filterClassicTurtleTrades(
   return trades.filter(trade => trade.side === side);
 }
 
+/** 到達済みエントリーの株数による加重平均取得価格を計算する。 */
+export function computeClassicAverageEntryPrice(entries: ClassicTurtleEntry[]): number | null {
+  const validEntries = entries.filter(entry =>
+    Number.isFinite(entry.price) && Number.isFinite(entry.shares) && entry.shares > 0,
+  );
+  const totalShares = validEntries.reduce((sum, entry) => sum + entry.shares, 0);
+  if (totalShares <= 0) return null;
+
+  const totalCost = validEntries.reduce((sum, entry) => sum + entry.price * entry.shares, 0);
+  return totalCost / totalShares;
+}
+
 interface InternalPosition {
   system: TurtleSystem;
   side: TurtleSide;

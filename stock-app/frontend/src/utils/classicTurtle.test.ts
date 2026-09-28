@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Bar } from './turtle';
 import {
   backtestClassicTurtle,
+  computeClassicAverageEntryPrice,
   computeClassicTurtleSqn,
   computeClassicTurtleIndicators,
   computeClassicUnitShares,
@@ -55,6 +56,44 @@ describe('computeClassicUnitShares', () => {
     expect(computeClassicUnitShares(1_000_000, 2)).toBe(5000);
     expect(computeClassicUnitShares(1_000_000, 2, 5, 10)).toBe(1000);
     expect(computeClassicUnitShares(0, 2)).toBe(0);
+  });
+});
+
+describe('computeClassicAverageEntryPrice', () => {
+  it('到達済みエントリーの株数による加重平均取得価格を計算する', () => {
+    expect(computeClassicAverageEntryPrice([
+      {
+        date: '2026-01-01',
+        side: 'long',
+        price: 100,
+        shares: 100,
+        unit: 1,
+        n: 2,
+        kind: 'initial',
+      },
+      {
+        date: '2026-01-02',
+        side: 'long',
+        price: 110,
+        shares: 50,
+        unit: 2,
+        n: 2,
+        kind: 'pyramid',
+      },
+    ])).toBeCloseTo((100 * 100 + 110 * 50) / 150);
+  });
+
+  it('有効なエントリーがない場合はnullを返す', () => {
+    expect(computeClassicAverageEntryPrice([])).toBeNull();
+    expect(computeClassicAverageEntryPrice([{
+      date: '2026-01-01',
+      side: 'long',
+      price: 100,
+      shares: 0,
+      unit: 1,
+      n: 2,
+      kind: 'initial',
+    }])).toBeNull();
   });
 });
 
@@ -208,10 +247,72 @@ describe('backtestClassicTurtle', () => {
       'initial', 'pyramid', 'pyramid', 'pyramid',
     ]);
     expect(trade.entries.every(entry => entry.shares === trade.entries[0].shares)).toBe(true);
+    expect(trade.entries[0].shares).toBe(500);
     expect(trade.entries.map(entry => entry.n)).toEqual([2, 2, 2, 2]);
     expect(trade.entries.map(entry => entry.price - 2 * entry.n)).toEqual([7, 8, 9, 10]);
     expect(result.days[4].position?.nextAddPrice).toBe(14);
     expect(result.days[4].position?.stopPrice).toBe(9);
+    expect(result.days[6].position?.nextAddPrice).toBeNull();
+  });
+
+  it('取引ごとのNによる1ユニット株数の違いを損益とR倍率へ反映する', () => {
+    const n2Bars = [
+      bar(0, 10, 11, 9),
+      bar(1, 10, 11, 9), // N=2、エントリーライン=11
+      bar(2, 12, 12, 12, 11), // 11でロングエントリー
+      bar(3, 12, 12, 12), // 決済ライン12に到達
+    ];
+    const n4Bars = [
+      bar(0, 10, 12, 8),
+      bar(1, 10, 12, 8), // N=4、エントリーライン=12
+      bar(2, 13, 13, 13, 12), // 12でロングエントリー
+      bar(3, 13, 13, 13), // 決済ライン13に到達
+    ];
+    const params = {
+      nPeriod: 2,
+      accountEquity: 100_000,
+      system1EntryDays: 2,
+      system1ExitDays: 1,
+      system2EntryDays: 5,
+      system2ExitDays: 2,
+    };
+
+    const n2Trade = backtestClassicTurtle(n2Bars, params).trades[0];
+    const n4Trade = backtestClassicTurtle(n4Bars, params).trades[0];
+
+    expect(n2Trade.exit).not.toBeNull();
+    expect(n4Trade.exit).not.toBeNull();
+    expect(n2Trade.entries[0].n).toBe(2);
+    expect(n4Trade.entries[0].n).toBe(3.5);
+    expect(n2Trade.entries[0].shares).toBe(500);
+    expect(n4Trade.entries[0].shares).toBe(285);
+    expect(n2Trade.pnl).toBe(500);
+    expect(n4Trade.pnl).toBe(285);
+    expect(n2Trade.riskMultiple).toBe(0.5);
+    expect(n4Trade.riskMultiple).toBeCloseTo(285 / (3.5 * 285));
+  });
+
+  it('ショート保有中は次回買い増し価格を0.5N下に表示する', () => {
+    const bars = [
+      bar(0, 10, 11, 9),
+      bar(1, 10, 11, 9),
+      bar(2, 8, 8, 8), // 2日安値9を下抜け、初回約定価格8 / N=2
+      bar(3, 6.5, 7.5, 6), // 次回買い増し価格7に到達
+      bar(4, 7, 7, 7),
+    ];
+    const result = backtestClassicTurtle(bars, {
+      nPeriod: 2,
+      accountEquity: 100_000,
+      system1EntryDays: 2,
+      system1ExitDays: 2,
+      system2EntryDays: 5,
+      system2ExitDays: 2,
+    });
+
+    expect(result.days[2].position?.side).toBe('short');
+    expect(result.days[2].position?.nextAddPrice).toBe(7);
+    expect(result.days[3].position?.entries).toHaveLength(2);
+    expect(result.days[3].position?.nextAddPrice).toBe(5.5);
   });
 
   it('ショートSystem 1をエントリーし、上昇で2Nストップ決済する', () => {
