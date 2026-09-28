@@ -16,6 +16,7 @@
 import type { Bar } from './turtle';
 
 export type TurtleSide = 'long' | 'short';
+export type ClassicTradeSideFilter = TurtleSide | 'both';
 export type TurtleSystem = 'system1' | 'system2';
 export type TurtleExitReason =
   | 'stop'
@@ -108,6 +109,26 @@ export interface ClassicTurtleBacktest {
   trades: ClassicTurtleTrade[];
   /** System 1の利益トレード後に、次のSystem 1シグナルをスキップする状態か。 */
   system1EntryBlocked: boolean;
+}
+
+export interface ClassicTurtleSqn {
+  /** SQNの対象になった完了取引数。 */
+  tradeCount: number;
+  /** R倍率の平均。 */
+  meanRiskMultiple: number;
+  /** R倍率の標本標準偏差。 */
+  standardDeviation: number;
+  /** meanRiskMultiple × √tradeCount ÷ standardDeviation。 */
+  value: number;
+}
+
+/** 取引方向フィルターを適用する。`both` は全方向を返す。 */
+export function filterClassicTurtleTrades(
+  trades: ClassicTurtleTrade[],
+  side: ClassicTradeSideFilter,
+): ClassicTurtleTrade[] {
+  if (side === 'both') return trades;
+  return trades.filter(trade => trade.side === side);
 }
 
 interface InternalPosition {
@@ -255,6 +276,30 @@ function totalPnl(trade: ClassicTurtleTrade, exitPrice: number, pointValue: numb
 function tradeRisk(trade: ClassicTurtleTrade, pointValue: number): number {
   const first = trade.entries[0];
   return first ? first.n * first.shares * pointValue : 0;
+}
+
+/** 完了取引のR倍率からSystem Quality Number (SQN)を計算する。 */
+export function computeClassicTurtleSqn(trades: ClassicTurtleTrade[]): ClassicTurtleSqn | null {
+  const riskMultiples = trades
+    .filter(trade => trade.exit !== null && Number.isFinite(trade.riskMultiple))
+    .map(trade => trade.riskMultiple);
+  const tradeCount = riskMultiples.length;
+  if (tradeCount < 2) return null;
+
+  const meanRiskMultiple = riskMultiples.reduce((sum, value) => sum + value, 0) / tradeCount;
+  const variance = riskMultiples.reduce(
+    (sum, value) => sum + (value - meanRiskMultiple) ** 2,
+    0,
+  ) / (tradeCount - 1);
+  const standardDeviation = Math.sqrt(variance);
+  if (standardDeviation === 0) return null;
+
+  return {
+    tradeCount,
+    meanRiskMultiple,
+    standardDeviation,
+    value: meanRiskMultiple * Math.sqrt(tradeCount) / standardDeviation,
+  };
 }
 
 function makeTrade(position: InternalPosition): ClassicTurtleTrade {
