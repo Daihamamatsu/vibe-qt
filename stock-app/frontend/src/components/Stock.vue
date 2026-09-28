@@ -86,7 +86,7 @@
     <!-- チャート表示（日足ローソク足 + 出来高バー + タートル ATR サブパネル + 下部ズームスライダー） -->
     <!-- chart-wrapper: 固定情報パネルの position 参照容器 -->
     <div ref="wrapperRef" class="chart-wrapper">
-      <v-chart ref="chartRef" :option="chartOptions" :style="{ height: turtleEnabled || obvEnabled ? '640px' : '480px' }" v-if="data.length > 0"></v-chart>
+      <v-chart ref="chartRef" :option="chartOptions" :style="{ height: turtleEnabled || classicTurtleEnabled || obvEnabled ? '640px' : '480px' }" v-if="data.length > 0"></v-chart>
       <!-- 固定情報パネル: ホバー中のローソク足の正確な価格・出来高を表示（ヘッダーでドラッグ可能） -->
       <div v-if="data.length > 0" ref="panelRef" class="info-panel" :style="panelStyle">
         <!-- ドラッグバー: ポインターはここだけ捕捉する（本体はクリック透過でクロスヘア維持） -->
@@ -1095,6 +1095,33 @@ const chartOptions = computed<EChartsOption>(() => {
   const PAD_TOP_PX = 20; // グリッド上部: BUY マーカー (△) の表示余白
   const PAD_BOT_PX = 20; // グリッド下部: EXIT マーカー (▽) の表示余白
   const MARK_GAP_PX = 10; // マーカー点とローソク足高値 / 安値の間隔 (px)
+  let priceMin = Infinity;
+  let priceMax = -Infinity;
+  const widenRange = (v: number | null) => {
+    if (v === null || !Number.isFinite(v)) return;
+    if (v < priceMin) priceMin = v;
+    if (v > priceMax) priceMax = v;
+  };
+  for (const d of records) {
+    widenRange(Number(d.low ?? d.close));
+    widenRange(Number(d.high ?? d.close));
+  }
+  if (classicTurtleEnabled.value) {
+    for (const row of classicTurtle.value.indicators) {
+      if (classicTurtleSystem.value !== 'system2') widenRange(row.system1LongEntry);
+      if (classicTurtleSystem.value !== 'system1') widenRange(row.system2LongEntry);
+      if (classicTurtleSystem.value !== 'system2') widenRange(row.system1ShortEntry);
+      if (classicTurtleSystem.value !== 'system1') widenRange(row.system2ShortEntry);
+    }
+    for (const trade of classicVisibleTrades.value) {
+      for (const entry of trade.entries) widenRange(entry.price);
+      widenRange(trade.exit?.price ?? null);
+    }
+  }
+  const priceSpan = priceMax - priceMin;
+  const pxPerPoint =
+    priceSpan > 0 ? priceSpan / Math.max(PRICE_GRID_PX - PAD_TOP_PX - PAD_BOT_PX, 1) : 0;
+  const markerGapPrice = MARK_GAP_PX * pxPerPoint;
   const axisBound = (v: { min: number; max: number }, isMax: boolean): number => {
     const span = v.max - v.min;
     if (!(span > 0)) return isMax ? v.max * 1.001 : v.min * 0.999;
@@ -1110,35 +1137,11 @@ const chartOptions = computed<EChartsOption>(() => {
     // --- BUY/EXIT マーカー配置用の価格レンジ (Issue #46) ---
     // 全データ（ローソク足 + Donchian バンド + markLine 値）の価格レンジ。
     // 固定ピクセル間隔 MARK_GAP_PX を価格に変換するためにのみ使用する。
-    let priceMin = Infinity;
-    let priceMax = -Infinity;
-    const widenRange = (v: number | null) => {
-      if (v === null || !Number.isFinite(v)) return;
-      if (v < priceMin) priceMin = v;
-      if (v > priceMax) priceMax = v;
-    };
-    for (const d of records) {
-      widenRange(Number(d.low ?? d.close));
-      widenRange(Number(d.high ?? d.close));
-    }
     for (const r of rows) {
       widenRange(r.donchianUpper);
       widenRange(r.donchianLower);
     }
 
-    // 古典版のDC20/DC55と取引価格も価格軸の範囲に含める。
-    if (classicTurtleEnabled.value) {
-      for (const row of classicTurtle.value.indicators) {
-        if (classicTurtleSystem.value !== 'system2') widenRange(row.system1LongEntry);
-        if (classicTurtleSystem.value !== 'system1') widenRange(row.system2LongEntry);
-        if (classicTurtleSystem.value !== 'system2') widenRange(row.system1ShortEntry);
-        if (classicTurtleSystem.value !== 'system1') widenRange(row.system2ShortEntry);
-      }
-      for (const trade of classicVisibleTrades.value) {
-        for (const entry of trade.entries) widenRange(entry.price);
-        widenRange(trade.exit?.price ?? null);
-      }
-    }
     // ピラミッド目標 / ストップの markLine はローソク足レンジの外側に伸び得る
     if (tg) {
       widenRange(tg.target1);
@@ -1146,12 +1149,6 @@ const chartOptions = computed<EChartsOption>(() => {
       widenRange(tg.target3);
       widenRange(tg.stop);
     }
-    const priceSpan = priceMax - priceMin;
-    // 価格パネルの 1px あたりの価格量（パディング分を差し引いた有効高さで換算）
-    const pxPerPoint =
-      priceSpan > 0 ? priceSpan / Math.max(PRICE_GRID_PX - PAD_TOP_PX - PAD_BOT_PX, 1) : 0;
-    const markerGapPrice = MARK_GAP_PX * pxPerPoint;
-
     series.push(
       {
         name: 'DC20 (エントリーライン)',
@@ -1232,64 +1229,6 @@ const chartOptions = computed<EChartsOption>(() => {
       },
     );
 
-    if (classicTurtleEnabled.value) {
-      const classic = classicTurtle.value;
-      const showSystem = (system: TurtleSystem) => classicTurtleSystem.value === 'both' || classicTurtleSystem.value === system;
-      const addClassicLine = (name: string, values: (number | null)[], color: string) => {
-        series.push({
-          name,
-          type: 'line',
-          xAxisIndex: 0,
-          yAxisIndex: 0,
-          data: values,
-          symbol: 'none',
-          showSymbol: false,
-          connectNulls: false,
-          lineStyle: { type: 'dotted', width: 1.2, color },
-          itemStyle: { color },
-        });
-      };
-      if (showSystem('system1')) {
-        addClassicLine('古典 S1 DC20 上限', classic.indicators.map(row => row.system1LongEntry), '#c0392b');
-        addClassicLine('古典 S1 DC20 下限', classic.indicators.map(row => row.system1ShortEntry), '#c0392b');
-      }
-      if (showSystem('system2')) {
-        addClassicLine('古典 S2 DC55 上限', classic.indicators.map(row => row.system2LongEntry), '#8e44ad');
-        addClassicLine('古典 S2 DC55 下限', classic.indicators.map(row => row.system2ShortEntry), '#8e44ad');
-      }
-      const entries = classicVisibleTrades.value.flatMap(trade => trade.entries.map(entry => ({ trade, entry })));
-      const exits = classicVisibleTrades.value
-        .filter(trade => trade.exit !== null)
-        .map(trade => ({ trade, exit: trade.exit! }));
-      series.push({
-        name: '古典エントリー',
-        type: 'scatter',
-        xAxisIndex: 0,
-        yAxisIndex: 0,
-        symbol: 'triangle',
-        symbolSize: 11,
-        data: entries.map(({ trade, entry }) => {
-          const i = records.findIndex(record => record.date === entry.date);
-          const high = i >= 0 ? Number(records[i].high ?? records[i].close) : entry.price;
-          return { value: [entry.date, high + markerGapPrice], itemStyle: { color: entry.side === 'long' ? '#d35400' : '#2980b9' }, label: { show: true, position: 'top', formatter: `${trade.system === 'system1' ? 'S1' : 'S2'} ${entry.side === 'long' ? 'L' : 'S'}${entry.kind === 'pyramid' ? '+' : ''}`, fontSize: 9 } };
-        }),
-      });
-      series.push({
-        name: '古典決済',
-        type: 'scatter',
-        xAxisIndex: 0,
-        yAxisIndex: 0,
-        symbol: 'triangle',
-        symbolRotate: 180,
-        symbolSize: 11,
-        data: exits.map(({ trade, exit }) => {
-          const i = records.findIndex(record => record.date === exit.date);
-          const low = i >= 0 ? Number(records[i].low ?? records[i].close) : exit.price;
-          return { value: [exit.date, low - markerGapPrice], itemStyle: { color: trade.side === 'long' ? '#27ae60' : '#16a085' }, label: { show: true, position: 'bottom', formatter: `${trade.system === 'system1' ? 'S1' : 'S2'} 決済`, fontSize: 9 } };
-        }),
-      });
-    }
-
     // 買い増し計画 (P2/P3/P4) と計画 EXIT のマーカー (Issue #44)。
     // 指標シグナル (BUY/EXIT マーカー) とは別物で、計画上の到達日を示す。
     const plan = turtlePlan.value;
@@ -1345,6 +1284,76 @@ const chartOptions = computed<EChartsOption>(() => {
         });
       }
     }
+  }
+
+  // 古典版の価格レンジは既存タートル表示に依存せず計算する。
+  if (classicTurtleEnabled.value) {
+    for (const row of classicTurtle.value.indicators) {
+      if (classicTurtleSystem.value !== 'system2') widenRange(row.system1LongEntry);
+      if (classicTurtleSystem.value !== 'system1') widenRange(row.system2LongEntry);
+      if (classicTurtleSystem.value !== 'system2') widenRange(row.system1ShortEntry);
+      if (classicTurtleSystem.value !== 'system1') widenRange(row.system2ShortEntry);
+    }
+    for (const trade of classicVisibleTrades.value) {
+      for (const entry of trade.entries) widenRange(entry.price);
+      widenRange(trade.exit?.price ?? null);
+    }
+
+    const classic = classicTurtle.value;
+    const showSystem = (system: TurtleSystem) => classicTurtleSystem.value === 'both' || classicTurtleSystem.value === system;
+    const addClassicLine = (name: string, values: (number | null)[], color: string) => {
+      series.push({
+        name,
+        type: 'line',
+        xAxisIndex: 0,
+        yAxisIndex: 0,
+        data: values,
+        symbol: 'none',
+        showSymbol: false,
+        connectNulls: false,
+        lineStyle: { type: 'dotted', width: 1.2, color },
+        itemStyle: { color },
+      });
+    };
+    if (showSystem('system1')) {
+      addClassicLine('古典 S1 DC20 上限', classic.indicators.map(row => row.system1LongEntry), '#c0392b');
+      addClassicLine('古典 S1 DC20 下限', classic.indicators.map(row => row.system1ShortEntry), '#c0392b');
+    }
+    if (showSystem('system2')) {
+      addClassicLine('古典 S2 DC55 上限', classic.indicators.map(row => row.system2LongEntry), '#8e44ad');
+      addClassicLine('古典 S2 DC55 下限', classic.indicators.map(row => row.system2ShortEntry), '#8e44ad');
+    }
+    const entries = classicVisibleTrades.value.flatMap(trade => trade.entries.map(entry => ({ trade, entry })));
+    const exits = classicVisibleTrades.value
+      .filter(trade => trade.exit !== null)
+      .map(trade => ({ trade, exit: trade.exit! }));
+    series.push({
+      name: '古典エントリー',
+      type: 'scatter',
+      xAxisIndex: 0,
+      yAxisIndex: 0,
+      symbol: 'triangle',
+      symbolSize: 11,
+      data: entries.map(({ trade, entry }) => {
+        const i = records.findIndex(record => record.date === entry.date);
+        const high = i >= 0 ? Number(records[i].high ?? records[i].close) : entry.price;
+        return { value: [entry.date, high + markerGapPrice], itemStyle: { color: entry.side === 'long' ? '#d35400' : '#2980b9' }, label: { show: true, position: 'top', formatter: `${trade.system === 'system1' ? 'S1' : 'S2'} ${entry.side === 'long' ? 'L' : 'S'}${entry.kind === 'pyramid' ? '+' : ''}`, fontSize: 9 } };
+      }),
+    });
+    series.push({
+      name: '古典決済',
+      type: 'scatter',
+      xAxisIndex: 0,
+      yAxisIndex: 0,
+      symbol: 'triangle',
+      symbolRotate: 180,
+      symbolSize: 11,
+      data: exits.map(({ trade, exit }) => {
+        const i = records.findIndex(record => record.date === exit.date);
+        const low = i >= 0 ? Number(records[i].low ?? records[i].close) : exit.price;
+        return { value: [exit.date, low - markerGapPrice], itemStyle: { color: trade.side === 'long' ? '#27ae60' : '#16a085' }, label: { show: true, position: 'bottom', formatter: `${trade.system === 'system1' ? 'S1' : 'S2'} 決済`, fontSize: 9 } };
+      }),
+    });
   }
 
   // OBV 系列 (Issue #61): 出来高の累積値（初日 OBV = 初日出来高。
