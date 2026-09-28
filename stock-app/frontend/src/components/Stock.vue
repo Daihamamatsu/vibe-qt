@@ -271,15 +271,36 @@
             <option value="system2">System 2</option>
           </select>
         </label>
+        <label>取引方向:
+          <select v-model="classicTradeSide">
+            <option value="both">ロング + ショート</option>
+            <option value="long">ロングのみ</option>
+            <option value="short">ショートのみ</option>
+          </select>
+        </label>
         <label>口座資金:
           <input type="number" v-model.number="classicAccountValue" min="0" style="width:9rem;" />
         </label>
+        <label>履歴開始日:
+          <input type="date" v-model="classicTradeStartDate" />
+        </label>
+        <label>履歴終了日:
+          <input type="date" v-model="classicTradeEndDate" />
+        </label>
+        <button
+          v-if="classicTradeStartDate || classicTradeEndDate"
+          type="button"
+          @click="clearClassicTradePeriod"
+        >期間をクリア</button>
         <span class="classic-turtle-note">S1: 20日 / 決済10日、S2: 55日 / 決済20日、N: 20日Wilder</span>
       </div>
       <template v-if="classicTurtleEnabled">
         <div class="classic-turtle-summary">
           <span>完了取引: {{ classicClosedTrades.length }}件</span>
           <span :class="classicTotalPnl >= 0 ? 'classic-profit' : 'classic-loss'">損益: {{ fmtMoney(classicTotalPnl) }}</span>
+          <span>SQN: {{ classicSqn === null ? '—' : classicSqn.value.toFixed(2) }}</span>
+          <span v-if="classicSqn !== null">平均R: {{ classicSqn.meanRiskMultiple.toFixed(2) }} / σ: {{ classicSqn.standardDeviation.toFixed(2) }}</span>
+          <span v-if="classicTradePeriodLabel">対象期間: {{ classicTradePeriodLabel }}</span>
           <span v-if="classicLatestPosition">
             保有: {{ classicLatestPosition.side === 'long' ? 'ロング' : 'ショート' }} {{ classicLatestPosition.entries.length }}ユニット
             ／ 次回買い増し: {{ classicLatestPosition.nextAddPrice === null ? 'なし' : fmtPrice(classicLatestPosition.nextAddPrice) }}
@@ -287,10 +308,10 @@
           </span>
           <span v-else>保有: なし</span>
         </div>
-        <table v-if="classicVisibleTrades.length > 0" class="turtle-table classic-trades">
+        <table v-if="classicFilteredTrades.length > 0" class="turtle-table classic-trades">
           <thead><tr><th>System</th><th>方向</th><th>エントリー詳細（価格 / N / 2N損切り）</th><th>決済</th><th>損益</th><th>R</th></tr></thead>
           <tbody>
-            <tr v-for="(trade, index) in classicVisibleTrades" :key="`${trade.system}-${trade.side}-${index}`">
+            <tr v-for="(trade, index) in classicFilteredTrades" :key="`${trade.system}-${trade.side}-${index}`">
               <td>{{ trade.system === 'system1' ? 'S1' : 'S2' }}</td>
               <td>{{ trade.side === 'long' ? 'Long' : 'Short' }}</td>
               <td>
@@ -329,8 +350,8 @@ import { shouldAutoRefreshYahoo } from '../utils/freshness';
 // タートルズ型 (Donchian + ATR) 計算モジュール（ルックアヘッドなし: 前日までのデータのみ使用）
 import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
-import { backtestClassicTurtle } from '../utils/classicTurtle';
-import type { ClassicTurtleBacktest, ClassicTurtleEntry, ClassicTurtleTrade, TurtleSystem } from '../utils/classicTurtle';
+import { backtestClassicTurtle, computeClassicTurtleSqn, filterClassicTurtleTrades } from '../utils/classicTurtle';
+import type { ClassicTradeSideFilter, ClassicTurtleBacktest, ClassicTurtleEntry, ClassicTurtleTrade, TurtleSystem } from '../utils/classicTurtle';
 // OBV (On-Balance Volume) 計算モジュール (Issue #61 / タートル BUY ブレイクの OBV 検証 Issue #63)
 import { computeObv, computeBreakoutObvChecks } from '../utils/obv';
 import type { BreakoutObvCheck } from '../utils/obv';
@@ -660,7 +681,10 @@ const obvEnabled = ref(false);
 // 既存の簡略版タートルズとは独立して表示・計算する。
 const classicTurtleEnabled = ref(true);
 const classicTurtleSystem = ref<TurtleSystem | 'both'>('both');
+const classicTradeSide = ref<ClassicTradeSideFilter>('both');
 const classicAccountValue = ref<number | string | null>(null);
+const classicTradeStartDate = ref('');
+const classicTradeEndDate = ref('');
 
 const classicAccountValueNumber = computed<number | null>(() => {
   const value = classicAccountValue.value;
@@ -704,12 +728,31 @@ const classicVisibleTrades = computed<ClassicTurtleTrade[]>(() =>
     // 取引履歴は初回エントリー日が新しいものから表示する。
     .sort((a, b) => (b.entries[0]?.date ?? '').localeCompare(a.entries[0]?.date ?? '')),
 );
+const classicFilteredTrades = computed<ClassicTurtleTrade[]>(() =>
+  filterClassicTurtleTrades(classicVisibleTrades.value, classicTradeSide.value).filter((trade) => {
+    const entryDate = trade.entries[0]?.date;
+    if (!entryDate) return false;
+    if (classicTradeStartDate.value && entryDate < classicTradeStartDate.value) return false;
+    if (classicTradeEndDate.value && entryDate > classicTradeEndDate.value) return false;
+    return true;
+  }),
+);
 const classicClosedTrades = computed(() =>
-  classicVisibleTrades.value.filter(trade => trade.exit !== null),
+  classicFilteredTrades.value.filter(trade => trade.exit !== null),
 );
 const classicTotalPnl = computed(() =>
   classicClosedTrades.value.reduce((sum, trade) => sum + trade.pnl, 0),
 );
+const classicSqn = computed(() => computeClassicTurtleSqn(classicClosedTrades.value));
+const classicTradePeriodLabel = computed(() => {
+  if (!classicTradeStartDate.value && !classicTradeEndDate.value) return '';
+  return `${classicTradeStartDate.value || '最初'} ～ ${classicTradeEndDate.value || '最後'}`;
+});
+
+function clearClassicTradePeriod(): void {
+  classicTradeStartDate.value = '';
+  classicTradeEndDate.value = '';
+}
 const classicLatestPosition = computed(() => {
   for (let i = classicTurtle.value.days.length - 1; i >= 0; i--) {
     const position = classicTurtle.value.days[i].position;
