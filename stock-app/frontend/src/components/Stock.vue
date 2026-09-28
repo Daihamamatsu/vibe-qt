@@ -306,20 +306,34 @@
           <span v-if="classicTradePeriodLabel">対象期間: {{ classicTradePeriodLabel }}</span>
           <span v-if="classicLatestPosition">
             保有: {{ classicLatestPosition.side === 'long' ? 'ロング' : 'ショート' }} {{ classicLatestPosition.entries.length }}ユニット
+            （{{ classicHoldingShares }}株）
             ／ 次回買い増し: {{ classicLatestPosition.nextAddPrice === null ? 'なし' : fmtPrice(classicLatestPosition.nextAddPrice) }}
             ／ 現在の2N損切り: {{ fmtPrice(classicLatestPosition.stopPrice) }}
           </span>
           <span v-else>保有: なし</span>
         </div>
         <table v-if="classicFilteredTrades.length > 0" class="turtle-table classic-trades">
-          <thead><tr><th>System</th><th>方向</th><th>エントリー詳細（価格 / N / 2N損切り）</th><th>決済</th><th>損益</th><th>R</th></tr></thead>
+          <thead><tr><th>System</th><th>方向</th><th>エントリー詳細（1ユニット株数 / 購入価格 / N / 2N損切り）</th><th>決済</th><th>損益</th><th>R</th></tr></thead>
           <tbody>
             <tr v-for="(trade, index) in classicFilteredTrades" :key="`${trade.system}-${trade.side}-${index}`">
               <td>{{ trade.system === 'system1' ? 'S1' : 'S2' }}</td>
               <td>{{ trade.side === 'long' ? 'Long' : 'Short' }}</td>
               <td>
-                <div v-for="entry in trade.entries" :key="`${entry.date}-${entry.unit}-${entry.price}`" class="classic-entry-detail">
-                  U{{ entry.unit }} {{ entry.date }} / {{ fmtPrice(entry.price) }} / N={{ fmtPrice(entry.n) }} / 2N={{ fmtPrice(classicStopPrice(entry)) }}
+                <div class="classic-unit-shares">
+                  1ユニット: {{ trade.entries[0]?.shares ?? 0 }}株 / 平均取得価格: {{ fmtPrice(computeClassicAverageEntryPrice(trade.entries)) }}
+                </div>
+                <div
+                  v-for="entry in classicEntryRows(trade)"
+                  :key="`${entry.unit}-${entry.date}-${entry.price}`"
+                  class="classic-entry-detail"
+                  :class="{ 'classic-entry-pending': entry.pending }"
+                >
+                  <template v-if="entry.pending">
+                    U{{ entry.unit }} 未到達 / 買い増し価格 {{ fmtPrice(entry.price) }} / {{ entry.shares }}株
+                  </template>
+                  <template v-else>
+                    U{{ entry.unit }} {{ entry.date }} / 購入価格 {{ fmtPrice(entry.price) }} / {{ entry.shares }}株 / N={{ fmtPrice(entry.n) }} / 2N={{ fmtPrice(classicStopPrice(entry)) }}
+                  </template>
                 </div>
               </td>
               <td>{{ trade.exit ? `${trade.exit.date} / ${fmtPrice(trade.exit.price)}` : '保有中' }}</td>
@@ -353,7 +367,7 @@ import { shouldAutoRefreshYahoo } from '../utils/freshness';
 // タートルズ型 (Donchian + ATR) 計算モジュール（ルックアヘッドなし: 前日までのデータのみ使用）
 import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
-import { backtestClassicTurtle, computeClassicTurtleSqn, filterClassicTurtleTrades } from '../utils/classicTurtle';
+import { backtestClassicTurtle, computeClassicAverageEntryPrice, computeClassicTurtleSqn, filterClassicTurtleTrades } from '../utils/classicTurtle';
 import type { ClassicTradeSideFilter, ClassicTurtleBacktest, ClassicTurtleEntry, ClassicTurtleTrade, TurtleSystem } from '../utils/classicTurtle';
 import {
   DEFAULT_USD_JPY_RATE,
@@ -807,6 +821,9 @@ const classicLatestPosition = computed(() => {
   }
   return null;
 });
+const classicHoldingShares = computed(() =>
+  classicLatestPosition.value?.entries.reduce((sum, entry) => sum + entry.shares, 0) ?? 0,
+);
 
 // 直近の N (ATR): ATR が計算できる最新の日の値
 const latestAtr = computed<number | null>(() => {
@@ -1046,8 +1063,51 @@ function fmtMoney(v: number, currency: 'JPY' | 'USD' = 'JPY'): string {
 }
 
 // 古典タートルズの各エントリーに対応する2N損切り価格を表示する。
-function classicStopPrice(entry: ClassicTurtleEntry): number {
+function classicStopPrice(entry: Pick<ClassicTurtleEntry, 'side' | 'price' | 'n'>): number {
   return entry.side === 'long' ? entry.price - 2 * entry.n : entry.price + 2 * entry.n;
+}
+
+interface ClassicEntryRow {
+  unit: number;
+  date: string;
+  price: number;
+  shares: number;
+  n: number;
+  side: ClassicTurtleEntry['side'];
+  pending: boolean;
+}
+
+// 保有中の取引は、未到達の買い増し価格をU4まで表示する。
+function classicEntryRows(trade: ClassicTurtleTrade): ClassicEntryRow[] {
+  const entries: ClassicEntryRow[] = trade.entries.map(entry => ({
+    unit: entry.unit,
+    date: entry.date,
+    price: entry.price,
+    shares: entry.shares,
+    n: entry.n,
+    side: entry.side,
+    pending: false,
+  }));
+  if (trade.exit !== null || entries.length >= 4 || entries.length === 0) return entries;
+
+  let previous = entries[entries.length - 1];
+  for (let unit = entries.length + 1; unit <= 4; unit++) {
+    const price = previous.side === 'long'
+      ? previous.price + 0.5 * previous.n
+      : previous.price - 0.5 * previous.n;
+    const pending: ClassicEntryRow = {
+      unit,
+      date: '未到達',
+      price,
+      shares: entries[0].shares,
+      n: previous.n,
+      side: previous.side,
+      pending: true,
+    };
+    entries.push(pending);
+    previous = pending;
+  }
+  return entries;
 }
 
 // --- パネルのドラッグ（ドラッグバーのみポインターを捕捉する） ---
@@ -2047,4 +2107,6 @@ onMounted(() => {
 .classic-loss { color:#c0392b; }
 .classic-trades { background:#fff; }
 .classic-entry-detail { white-space:nowrap; line-height:1.45; }
+.classic-unit-shares { font-weight:600; margin-bottom:.15rem; }
+.classic-entry-pending { color:#94a3b8; }
 </style>
