@@ -280,16 +280,24 @@
         <div class="classic-turtle-summary">
           <span>完了取引: {{ classicClosedTrades.length }}件</span>
           <span :class="classicTotalPnl >= 0 ? 'classic-profit' : 'classic-loss'">損益: {{ fmtMoney(classicTotalPnl) }}</span>
-          <span v-if="classicLatestPosition">保有: {{ classicLatestPosition.side === 'long' ? 'ロング' : 'ショート' }} {{ classicLatestPosition.entries.length }}ユニット</span>
+          <span v-if="classicLatestPosition">
+            保有: {{ classicLatestPosition.side === 'long' ? 'ロング' : 'ショート' }} {{ classicLatestPosition.entries.length }}ユニット
+            ／ 次回買い増し: {{ classicLatestPosition.nextAddPrice === null ? 'なし' : fmtPrice(classicLatestPosition.nextAddPrice) }}
+            ／ 現在の2N損切り: {{ fmtPrice(classicLatestPosition.stopPrice) }}
+          </span>
           <span v-else>保有: なし</span>
         </div>
         <table v-if="classicVisibleTrades.length > 0" class="turtle-table classic-trades">
-          <thead><tr><th>System</th><th>方向</th><th>エントリー</th><th>決済</th><th>損益</th><th>R</th></tr></thead>
+          <thead><tr><th>System</th><th>方向</th><th>エントリー詳細（価格 / N / 2N損切り）</th><th>決済</th><th>損益</th><th>R</th></tr></thead>
           <tbody>
             <tr v-for="(trade, index) in classicVisibleTrades" :key="`${trade.system}-${trade.side}-${index}`">
               <td>{{ trade.system === 'system1' ? 'S1' : 'S2' }}</td>
               <td>{{ trade.side === 'long' ? 'Long' : 'Short' }}</td>
-              <td>{{ trade.entries[0]?.date }} / {{ fmtPrice(trade.entries[0]?.price) }} ({{ trade.entries.length }}U)</td>
+              <td>
+                <div v-for="entry in trade.entries" :key="`${entry.date}-${entry.unit}-${entry.price}`" class="classic-entry-detail">
+                  U{{ entry.unit }} {{ entry.date }} / {{ fmtPrice(entry.price) }} / N={{ fmtPrice(entry.n) }} / 2N={{ fmtPrice(classicStopPrice(entry)) }}
+                </div>
+              </td>
               <td>{{ trade.exit ? `${trade.exit.date} / ${fmtPrice(trade.exit.price)}` : '保有中' }}</td>
               <td :class="trade.pnl >= 0 ? 'classic-profit' : 'classic-loss'">{{ fmtMoney(trade.pnl) }}</td>
               <td>{{ trade.riskMultiple.toFixed(2) }}R</td>
@@ -322,7 +330,7 @@ import { shouldAutoRefreshYahoo } from '../utils/freshness';
 import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
 import { backtestClassicTurtle } from '../utils/classicTurtle';
-import type { ClassicTurtleBacktest, ClassicTurtleTrade, TurtleSystem } from '../utils/classicTurtle';
+import type { ClassicTurtleBacktest, ClassicTurtleEntry, ClassicTurtleTrade, TurtleSystem } from '../utils/classicTurtle';
 // OBV (On-Balance Volume) 計算モジュール (Issue #61 / タートル BUY ブレイクの OBV 検証 Issue #63)
 import { computeObv, computeBreakoutObvChecks } from '../utils/obv';
 import type { BreakoutObvCheck } from '../utils/obv';
@@ -650,7 +658,7 @@ const obvEnabled = ref(false);
 
 // --- 古典タートルズ (System 1 / System 2) ---
 // 既存の簡略版タートルズとは独立して表示・計算する。
-const classicTurtleEnabled = ref(false);
+const classicTurtleEnabled = ref(true);
 const classicTurtleSystem = ref<TurtleSystem | 'both'>('both');
 const classicAccountValue = ref<number | string | null>(null);
 
@@ -662,7 +670,7 @@ const classicAccountValueNumber = computed<number | null>(() => {
 });
 
 // --- タートル戦略 (Donchian Channel + ATR) の状態 (Issue #53: 既定値なし・保存状態のみ使用) ---
-const turtleEnabled = ref(true);
+const turtleEnabled = ref(false);
 const atrPeriod = ref(20); // N (ATR) の期間: 14 / 20
 const accountValue = ref<number | string | null>(null); // 口座資金（保存状態のない銘柄は空欄）
 const turtleBuyPrice = ref<number | string | null>(null); // 買値（保存状態のない銘柄は空欄）
@@ -689,9 +697,12 @@ const classicTurtle = computed<ClassicTurtleBacktest>(() =>
   }),
 );
 const classicVisibleTrades = computed<ClassicTurtleTrade[]>(() =>
-  classicTurtle.value.trades.filter(trade =>
-    classicTurtleSystem.value === 'both' || trade.system === classicTurtleSystem.value,
-  ),
+  classicTurtle.value.trades
+    .filter(trade =>
+      classicTurtleSystem.value === 'both' || trade.system === classicTurtleSystem.value,
+    )
+    // 取引履歴は初回エントリー日が新しいものから表示する。
+    .sort((a, b) => (b.entries[0]?.date ?? '').localeCompare(a.entries[0]?.date ?? '')),
 );
 const classicClosedTrades = computed(() =>
   classicVisibleTrades.value.filter(trade => trade.exit !== null),
@@ -943,6 +954,11 @@ function fmtVolume(v: number | null | undefined): string {
 function fmtMoney(v: number): string {
   if (!Number.isFinite(v)) return '—';
   return `${v >= 0 ? '+' : ''}${v.toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// 古典タートルズの各エントリーに対応する2N損切り価格を表示する。
+function classicStopPrice(entry: ClassicTurtleEntry): number {
+  return entry.side === 'long' ? entry.price - 2 * entry.n : entry.price + 2 * entry.n;
 }
 
 // --- パネルのドラッグ（ドラッグバーのみポインターを捕捉する） ---
@@ -1298,6 +1314,12 @@ const chartOptions = computed<EChartsOption>(() => {
       for (const entry of trade.entries) widenRange(entry.price);
       widenRange(trade.exit?.price ?? null);
     }
+    // 取引期間中の2N損切りラインも価格レンジに含めて、ラインを欠けさせない。
+    for (const day of classicTurtle.value.days) {
+      if (day.position !== null && (classicTurtleSystem.value === 'both' || day.position.system === classicTurtleSystem.value)) {
+        widenRange(day.position.stopPrice);
+      }
+    }
 
     const classic = classicTurtle.value;
     const showSystem = (system: TurtleSystem) => classicTurtleSystem.value === 'both' || classicTurtleSystem.value === system;
@@ -1340,6 +1362,20 @@ const chartOptions = computed<EChartsOption>(() => {
         return { value: [entry.date, high + markerGapPrice], itemStyle: { color: entry.side === 'long' ? '#d35400' : '#2980b9' }, label: { show: true, position: 'top', formatter: `${trade.system === 'system1' ? 'S1' : 'S2'} ${entry.side === 'long' ? 'L' : 'S'}${entry.kind === 'pyramid' ? '+' : ''}`, fontSize: 9 } };
       }),
     });
+    for (const system of (classicTurtleSystem.value === 'both' ? ['system1', 'system2'] as TurtleSystem[] : [classicTurtleSystem.value])) {
+      series.push({
+        name: `古典 ${system === 'system1' ? 'S1' : 'S2'} 2N損切り`,
+        type: 'line',
+        xAxisIndex: 0,
+        yAxisIndex: 0,
+        data: classic.days.map(day => day.position?.system === system ? day.position.stopPrice : null),
+        symbol: 'none',
+        showSymbol: false,
+        connectNulls: false,
+        lineStyle: { type: 'dashed', width: 1.5, color: system === 'system1' ? '#e67e22' : '#2980b9' },
+        itemStyle: { color: system === 'system1' ? '#e67e22' : '#2980b9' },
+      });
+    }
     series.push({
       name: '古典決済',
       type: 'scatter',
@@ -1908,4 +1944,5 @@ onMounted(() => {
 .classic-profit { color:#2c7a2c; }
 .classic-loss { color:#c0392b; }
 .classic-trades { background:#fff; }
+.classic-entry-detail { white-space:nowrap; line-height:1.45; }
 </style>

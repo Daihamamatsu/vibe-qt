@@ -84,6 +84,10 @@ describe('backtestClassicTurtle', () => {
       'initial', 'pyramid', 'pyramid', 'pyramid',
     ]);
     expect(trade.entries.every(entry => entry.shares === trade.entries[0].shares)).toBe(true);
+    expect(trade.entries.map(entry => entry.n)).toEqual([2, 2, 2, 2]);
+    expect(trade.entries.map(entry => entry.price - 2 * entry.n)).toEqual([7, 8, 9, 10]);
+    expect(result.days[4].position?.nextAddPrice).toBe(14);
+    expect(result.days[4].position?.stopPrice).toBe(9);
   });
 
   it('ショートSystem 1をエントリーし、上昇で2Nストップ決済する', () => {
