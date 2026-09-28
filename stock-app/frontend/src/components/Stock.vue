@@ -278,8 +278,11 @@
             <option value="short">ショートのみ</option>
           </select>
         </label>
-        <label>口座資金:
+        <label>口座資金（{{ classicTurtleCurrency }}）:
           <input type="number" v-model.number="classicAccountValue" min="0" style="width:9rem;" />
+        </label>
+        <label>為替レート（円/USD）:
+          <input type="number" v-model.number="classicUsdJpyRate" min="0.01" step="0.01" style="width:7rem;" />
         </label>
         <label>履歴開始日:
           <input type="date" v-model="classicTradeStartDate" />
@@ -297,7 +300,7 @@
       <template v-if="classicTurtleEnabled">
         <div class="classic-turtle-summary">
           <span>完了取引: {{ classicClosedTrades.length }}件</span>
-          <span :class="classicTotalPnl >= 0 ? 'classic-profit' : 'classic-loss'">損益: {{ fmtMoney(classicTotalPnl) }}</span>
+          <span :class="classicTotalPnl >= 0 ? 'classic-profit' : 'classic-loss'">損益: {{ fmtMoney(classicTotalPnl, classicTurtleCurrency) }}</span>
           <span>SQN: {{ classicSqn === null ? '—' : classicSqn.value.toFixed(2) }}</span>
           <span v-if="classicSqn !== null">平均R: {{ classicSqn.meanRiskMultiple.toFixed(2) }} / σ: {{ classicSqn.standardDeviation.toFixed(2) }}</span>
           <span v-if="classicTradePeriodLabel">対象期間: {{ classicTradePeriodLabel }}</span>
@@ -320,7 +323,7 @@
                 </div>
               </td>
               <td>{{ trade.exit ? `${trade.exit.date} / ${fmtPrice(trade.exit.price)}` : '保有中' }}</td>
-              <td :class="trade.pnl >= 0 ? 'classic-profit' : 'classic-loss'">{{ fmtMoney(trade.pnl) }}</td>
+              <td :class="trade.pnl >= 0 ? 'classic-profit' : 'classic-loss'">{{ fmtMoney(trade.pnl, classicTurtleCurrency) }}</td>
               <td>{{ trade.riskMultiple.toFixed(2) }}R</td>
             </tr>
           </tbody>
@@ -352,6 +355,14 @@ import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitSha
 import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
 import { backtestClassicTurtle, computeClassicTurtleSqn, filterClassicTurtleTrades } from '../utils/classicTurtle';
 import type { ClassicTradeSideFilter, ClassicTurtleBacktest, ClassicTurtleEntry, ClassicTurtleTrade, TurtleSystem } from '../utils/classicTurtle';
+import {
+  DEFAULT_USD_JPY_RATE,
+  convertAccountEquity,
+  convertToAccountEquityYen,
+  getClassicTurtleCurrency,
+  loadClassicTurtleSettings,
+  saveClassicTurtleSettings,
+} from '../utils/classicTurtleSettings';
 // OBV (On-Balance Volume) 計算モジュール (Issue #61 / タートル BUY ブレイクの OBV 検証 Issue #63)
 import { computeObv, computeBreakoutObvChecks } from '../utils/obv';
 import type { BreakoutObvCheck } from '../utils/obv';
@@ -682,15 +693,49 @@ const obvEnabled = ref(false);
 const classicTurtleEnabled = ref(true);
 const classicTurtleSystem = ref<TurtleSystem | 'both'>('both');
 const classicTradeSide = ref<ClassicTradeSideFilter>('both');
-const classicAccountValue = ref<number | string | null>(null);
+const classicSettings = ref(loadClassicTurtleSettings());
+const classicAccountEquityYen = ref(classicSettings.value.accountEquityYen);
+const classicUsdJpyRate = ref<number | string>(classicSettings.value.usdJpyRate);
 const classicTradeStartDate = ref('');
 const classicTradeEndDate = ref('');
 
+const classicTurtleCurrency = computed(() => getClassicTurtleCurrency(symbol.value));
+const classicUsdJpyRateNumber = computed(() => {
+  const value = classicUsdJpyRate.value;
+  const numberValue = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : DEFAULT_USD_JPY_RATE;
+});
+// 表示通貨の入力値を円建ての共通資金へ変換する writable computed。
+// 米国株で編集しても共通円資金が更新され、日本株の表示へ反映される。
+const classicAccountValue = computed<number | null>({
+  get: () => convertAccountEquity(
+    classicAccountEquityYen.value,
+    classicTurtleCurrency.value,
+    classicUsdJpyRateNumber.value,
+  ),
+  set: (value) => {
+    const numberValue = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(numberValue) || numberValue < 0) return;
+    classicAccountEquityYen.value = convertToAccountEquityYen(
+      numberValue,
+      classicTurtleCurrency.value,
+      classicUsdJpyRateNumber.value,
+    );
+  },
+});
+
 const classicAccountValueNumber = computed<number | null>(() => {
   const value = classicAccountValue.value;
-  if (value === null || value === '') return null;
-  const numberValue = typeof value === 'number' ? value : Number(value);
-  return Number.isFinite(numberValue) ? numberValue : null;
+  return value !== null && Number.isFinite(value) ? value : null;
+});
+
+watch([classicAccountEquityYen, classicUsdJpyRateNumber], () => {
+  const settings = {
+    accountEquityYen: classicAccountEquityYen.value,
+    usdJpyRate: classicUsdJpyRateNumber.value,
+  };
+  classicSettings.value = settings;
+  saveClassicTurtleSettings(settings);
 });
 
 // --- タートル戦略 (Donchian Channel + ATR) の状態 (Issue #53: 既定値なし・保存状態のみ使用) ---
@@ -713,7 +758,7 @@ const turtle = computed<TurtleBar[]>(() =>
 // 初日 OBV = 初日出来高。①上昇日 +出来高 ②下降日 −出来高 ③同値日 不変
 const obv = computed(() => computeObv(data.value));
 
-// 古典仕様のバックテスト結果。口座資金が未指定でもシグナルとラインは計算する。
+// 古典仕様のバックテスト結果。口座資金は表示中の通貨へ換算して渡す。
 const classicTurtle = computed<ClassicTurtleBacktest>(() =>
   backtestClassicTurtle(data.value, {
     accountEquity: classicAccountValueNumber.value ?? 0,
@@ -994,9 +1039,10 @@ function fmtVolume(v: number | null | undefined): string {
 }
 
 // 古典タートルズの損益表示（株式のポイント価値は1）。
-function fmtMoney(v: number): string {
+function fmtMoney(v: number, currency: 'JPY' | 'USD' = 'JPY'): string {
   if (!Number.isFinite(v)) return '—';
-  return `${v >= 0 ? '+' : ''}${v.toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const suffix = currency === 'USD' ? ' USD' : ' 円';
+  return `${v >= 0 ? '+' : ''}${v.toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${suffix}`;
 }
 
 // 古典タートルズの各エントリーに対応する2N損切り価格を表示する。
