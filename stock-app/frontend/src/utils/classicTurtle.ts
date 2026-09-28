@@ -20,8 +20,7 @@ export type ClassicTradeSideFilter = TurtleSide | 'both';
 export type TurtleSystem = 'system1' | 'system2';
 export type TurtleExitReason =
   | 'stop'
-  | 'channel'
-  | 'end_of_data';
+  | 'channel';
 
 export interface ClassicTurtleParams {
   /** 古典仕様では20日固定。設定値として公開し、テストで短縮可能にする。 */
@@ -324,8 +323,10 @@ export function backtestClassicTurtle(
 ): ClassicTurtleBacktest {
   const pointValue = finitePositive(params.pointValue, 1);
   const maxUnits = positiveInt(params.maxUnits, 4);
-  const indicators = computeClassicTurtleIndicators(bars, params);
-  const values = prepareBars(bars);
+  // API は日付降順を返すため、バックテスト内部では日付昇順にそろえる。
+  const orderedBars = [...bars].sort((a, b) => a.date.localeCompare(b.date));
+  const indicators = computeClassicTurtleIndicators(orderedBars, params);
+  const values = prepareBars(orderedBars);
   const trades: ClassicTurtleTrade[] = [];
   const days: ClassicTurtleDay[] = [];
   let position: InternalPosition | null = null;
@@ -338,7 +339,7 @@ export function backtestClassicTurtle(
   ): ClassicTurtleExit => {
     const current = position as InternalPosition;
     const trade = trades[current.tradeIndex];
-    const exit: ClassicTurtleExit = { date: bars[index].date, price, reason };
+    const exit: ClassicTurtleExit = { date: orderedBars[index].date, price, reason };
     trade.exit = exit;
     trade.pnl = totalPnl(trade, price, pointValue);
     const risk = tradeRisk(trade, pointValue);
@@ -348,7 +349,7 @@ export function backtestClassicTurtle(
     return exit;
   };
 
-  for (let i = 0; i < bars.length; i++) {
+  for (let i = 0; i < orderedBars.length; i++) {
     const row = indicators[i];
     const bar = values[i];
     let entry: ClassicTurtleEntry | null = null;
@@ -378,7 +379,7 @@ export function backtestClassicTurtle(
         if (favorable) {
           const addPrice = executionPrice(bar, position.nextAddPrice, position.side, false);
           const add: ClassicTurtleEntry = {
-            date: bars[i].date,
+            date: orderedBars[i].date,
             side: position.side,
             price: addPrice,
             shares: position.entries[0].shares,
@@ -435,7 +436,7 @@ export function backtestClassicTurtle(
           params.lotSize ?? 1,
         );
         const initial: ClassicTurtleEntry = {
-          date: bars[i].date,
+          date: orderedBars[i].date,
           side: candidate.side,
           price,
           shares,
@@ -471,7 +472,7 @@ export function backtestClassicTurtle(
     }
 
     days.push({
-      date: bars[i].date,
+      date: orderedBars[i].date,
       indicator: row,
       position: position === null ? null : positionView(position),
       entry,
@@ -479,25 +480,6 @@ export function backtestClassicTurtle(
       system1EntrySkipped,
       ambiguous,
     });
-  }
-
-  if (position !== null && bars.length > 0) {
-    const lastIndex = bars.length - 1;
-    const trade = trades[position.tradeIndex];
-    const lastClose = values[lastIndex].close;
-    const finalExit: ClassicTurtleExit = {
-      date: bars[lastIndex].date,
-      price: lastClose,
-      reason: 'end_of_data',
-    };
-    trade.exit = finalExit;
-    trade.pnl = totalPnl(trade, lastClose, pointValue);
-    const risk = tradeRisk(trade, pointValue);
-    trade.riskMultiple = risk > 0 ? trade.pnl / risk : 0;
-    const day = days[lastIndex];
-    day.exit = finalExit;
-    day.position = null;
-    position = null;
   }
 
   return { indicators, days, trades, system1EntryBlocked };
