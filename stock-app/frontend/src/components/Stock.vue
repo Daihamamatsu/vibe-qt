@@ -258,6 +258,47 @@
         買い増し / EXIT 計画を表示するにはブレイク日 (BUY シグナル日) を指定してください
       </p>
     </div>
+
+    <!-- 古典的タートルズ (Richard Dennis / William Eckhardt) -->
+    <div class="classic-turtle-panel">
+      <h4>古典タートルズ (System 1 / System 2)</h4>
+      <div class="classic-turtle-controls">
+        <label><input type="checkbox" v-model="classicTurtleEnabled" /> 表示</label>
+        <label>表示システム:
+          <select v-model="classicTurtleSystem">
+            <option value="both">System 1 + 2</option>
+            <option value="system1">System 1</option>
+            <option value="system2">System 2</option>
+          </select>
+        </label>
+        <label>口座資金:
+          <input type="number" v-model.number="classicAccountValue" min="0" style="width:9rem;" />
+        </label>
+        <span class="classic-turtle-note">S1: 20日 / 決済10日、S2: 55日 / 決済20日、N: 20日Wilder</span>
+      </div>
+      <template v-if="classicTurtleEnabled">
+        <div class="classic-turtle-summary">
+          <span>完了取引: {{ classicClosedTrades.length }}件</span>
+          <span :class="classicTotalPnl >= 0 ? 'classic-profit' : 'classic-loss'">損益: {{ fmtMoney(classicTotalPnl) }}</span>
+          <span v-if="classicLatestPosition">保有: {{ classicLatestPosition.side === 'long' ? 'ロング' : 'ショート' }} {{ classicLatestPosition.entries.length }}ユニット</span>
+          <span v-else>保有: なし</span>
+        </div>
+        <table v-if="classicVisibleTrades.length > 0" class="turtle-table classic-trades">
+          <thead><tr><th>System</th><th>方向</th><th>エントリー</th><th>決済</th><th>損益</th><th>R</th></tr></thead>
+          <tbody>
+            <tr v-for="(trade, index) in classicVisibleTrades" :key="`${trade.system}-${trade.side}-${index}`">
+              <td>{{ trade.system === 'system1' ? 'S1' : 'S2' }}</td>
+              <td>{{ trade.side === 'long' ? 'Long' : 'Short' }}</td>
+              <td>{{ trade.entries[0]?.date }} / {{ fmtPrice(trade.entries[0]?.price) }} ({{ trade.entries.length }}U)</td>
+              <td>{{ trade.exit ? `${trade.exit.date} / ${fmtPrice(trade.exit.price)}` : '保有中' }}</td>
+              <td :class="trade.pnl >= 0 ? 'classic-profit' : 'classic-loss'">{{ fmtMoney(trade.pnl) }}</td>
+              <td>{{ trade.riskMultiple.toFixed(2) }}R</td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="turtle-hint">表示可能な古典タートルズ取引はありません。</p>
+      </template>
+    </div>
   </div>
 </template>
 
@@ -280,6 +321,8 @@ import { shouldAutoRefreshYahoo } from '../utils/freshness';
 // タートルズ型 (Donchian + ATR) 計算モジュール（ルックアヘッドなし: 前日までのデータのみ使用）
 import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
+import { backtestClassicTurtle } from '../utils/classicTurtle';
+import type { ClassicTurtleBacktest, ClassicTurtleTrade, TurtleSystem } from '../utils/classicTurtle';
 // OBV (On-Balance Volume) 計算モジュール (Issue #61 / タートル BUY ブレイクの OBV 検証 Issue #63)
 import { computeObv, computeBreakoutObvChecks } from '../utils/obv';
 import type { BreakoutObvCheck } from '../utils/obv';
@@ -605,6 +648,19 @@ const yahooError = ref(false);
 // --- OBV (On-Balance Volume) 表示トグル (Issue #61): ON 時、出来高の下に OBV パネルを追加 ---
 const obvEnabled = ref(false);
 
+// --- 古典タートルズ (System 1 / System 2) ---
+// 既存の簡略版タートルズとは独立して表示・計算する。
+const classicTurtleEnabled = ref(false);
+const classicTurtleSystem = ref<TurtleSystem | 'both'>('both');
+const classicAccountValue = ref<number | string | null>(null);
+
+const classicAccountValueNumber = computed<number | null>(() => {
+  const value = classicAccountValue.value;
+  if (value === null || value === '') return null;
+  const numberValue = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+});
+
 // --- タートル戦略 (Donchian Channel + ATR) の状態 (Issue #53: 既定値なし・保存状態のみ使用) ---
 const turtleEnabled = ref(true);
 const atrPeriod = ref(20); // N (ATR) の期間: 14 / 20
@@ -624,6 +680,35 @@ const turtle = computed<TurtleBar[]>(() =>
 // OBV (On-Balance Volume) の計算結果 (Issue #61)
 // 初日 OBV = 初日出来高。①上昇日 +出来高 ②下降日 −出来高 ③同値日 不変
 const obv = computed(() => computeObv(data.value));
+
+// 古典仕様のバックテスト結果。口座資金が未指定でもシグナルとラインは計算する。
+const classicTurtle = computed<ClassicTurtleBacktest>(() =>
+  backtestClassicTurtle(data.value, {
+    accountEquity: classicAccountValueNumber.value ?? 0,
+    nPeriod: 20,
+  }),
+);
+const classicVisibleTrades = computed<ClassicTurtleTrade[]>(() =>
+  classicTurtle.value.trades.filter(trade =>
+    classicTurtleSystem.value === 'both' || trade.system === classicTurtleSystem.value,
+  ),
+);
+const classicClosedTrades = computed(() =>
+  classicVisibleTrades.value.filter(trade => trade.exit !== null),
+);
+const classicTotalPnl = computed(() =>
+  classicClosedTrades.value.reduce((sum, trade) => sum + trade.pnl, 0),
+);
+const classicLatestPosition = computed(() => {
+  for (let i = classicTurtle.value.days.length - 1; i >= 0; i--) {
+    const position = classicTurtle.value.days[i].position;
+    if (position !== null && (classicTurtleSystem.value === 'both' || position.system === classicTurtleSystem.value)) {
+      return position;
+    }
+  }
+  return null;
+});
+
 // 直近の N (ATR): ATR が計算できる最新の日の値
 const latestAtr = computed<number | null>(() => {
   const rows = turtle.value;
@@ -854,6 +939,12 @@ function fmtVolume(v: number | null | undefined): string {
   return Math.round(v).toLocaleString('ja-JP');
 }
 
+// 古典タートルズの損益表示（株式のポイント価値は1）。
+function fmtMoney(v: number): string {
+  if (!Number.isFinite(v)) return '—';
+  return `${v >= 0 ? '+' : ''}${v.toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 // --- パネルのドラッグ（ドラッグバーのみポインターを捕捉する） ---
 let panelDragStart: { pointerX: number; pointerY: number; startX: number; startY: number } | null = null;
 
@@ -1034,6 +1125,20 @@ const chartOptions = computed<EChartsOption>(() => {
       widenRange(r.donchianUpper);
       widenRange(r.donchianLower);
     }
+
+    // 古典版のDC20/DC55と取引価格も価格軸の範囲に含める。
+    if (classicTurtleEnabled.value) {
+      for (const row of classicTurtle.value.indicators) {
+        if (classicTurtleSystem.value !== 'system2') widenRange(row.system1LongEntry);
+        if (classicTurtleSystem.value !== 'system1') widenRange(row.system2LongEntry);
+        if (classicTurtleSystem.value !== 'system2') widenRange(row.system1ShortEntry);
+        if (classicTurtleSystem.value !== 'system1') widenRange(row.system2ShortEntry);
+      }
+      for (const trade of classicVisibleTrades.value) {
+        for (const entry of trade.entries) widenRange(entry.price);
+        widenRange(trade.exit?.price ?? null);
+      }
+    }
     // ピラミッド目標 / ストップの markLine はローソク足レンジの外側に伸び得る
     if (tg) {
       widenRange(tg.target1);
@@ -1126,6 +1231,64 @@ const chartOptions = computed<EChartsOption>(() => {
         itemStyle: { color: '#8e44ad' },
       },
     );
+
+    if (classicTurtleEnabled.value) {
+      const classic = classicTurtle.value;
+      const showSystem = (system: TurtleSystem) => classicTurtleSystem.value === 'both' || classicTurtleSystem.value === system;
+      const addClassicLine = (name: string, values: (number | null)[], color: string) => {
+        series.push({
+          name,
+          type: 'line',
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          data: values,
+          symbol: 'none',
+          showSymbol: false,
+          connectNulls: false,
+          lineStyle: { type: 'dotted', width: 1.2, color },
+          itemStyle: { color },
+        });
+      };
+      if (showSystem('system1')) {
+        addClassicLine('古典 S1 DC20 上限', classic.indicators.map(row => row.system1LongEntry), '#c0392b');
+        addClassicLine('古典 S1 DC20 下限', classic.indicators.map(row => row.system1ShortEntry), '#c0392b');
+      }
+      if (showSystem('system2')) {
+        addClassicLine('古典 S2 DC55 上限', classic.indicators.map(row => row.system2LongEntry), '#8e44ad');
+        addClassicLine('古典 S2 DC55 下限', classic.indicators.map(row => row.system2ShortEntry), '#8e44ad');
+      }
+      const entries = classicVisibleTrades.value.flatMap(trade => trade.entries.map(entry => ({ trade, entry })));
+      const exits = classicVisibleTrades.value
+        .filter(trade => trade.exit !== null)
+        .map(trade => ({ trade, exit: trade.exit! }));
+      series.push({
+        name: '古典エントリー',
+        type: 'scatter',
+        xAxisIndex: 0,
+        yAxisIndex: 0,
+        symbol: 'triangle',
+        symbolSize: 11,
+        data: entries.map(({ trade, entry }) => {
+          const i = records.findIndex(record => record.date === entry.date);
+          const high = i >= 0 ? Number(records[i].high ?? records[i].close) : entry.price;
+          return { value: [entry.date, high + markerGapPrice], itemStyle: { color: entry.side === 'long' ? '#d35400' : '#2980b9' }, label: { show: true, position: 'top', formatter: `${trade.system === 'system1' ? 'S1' : 'S2'} ${entry.side === 'long' ? 'L' : 'S'}${entry.kind === 'pyramid' ? '+' : ''}`, fontSize: 9 } };
+        }),
+      });
+      series.push({
+        name: '古典決済',
+        type: 'scatter',
+        xAxisIndex: 0,
+        yAxisIndex: 0,
+        symbol: 'triangle',
+        symbolRotate: 180,
+        symbolSize: 11,
+        data: exits.map(({ trade, exit }) => {
+          const i = records.findIndex(record => record.date === exit.date);
+          const low = i >= 0 ? Number(records[i].low ?? records[i].close) : exit.price;
+          return { value: [exit.date, low - markerGapPrice], itemStyle: { color: trade.side === 'long' ? '#27ae60' : '#16a085' }, label: { show: true, position: 'bottom', formatter: `${trade.system === 'system1' ? 'S1' : 'S2'} 決済`, fontSize: 9 } };
+        }),
+      });
+    }
 
     // 買い増し計画 (P2/P3/P4) と計画 EXIT のマーカー (Issue #44)。
     // 指標シグナル (BUY/EXIT マーカー) とは別物で、計画上の到達日を示す。
@@ -1706,4 +1869,34 @@ onMounted(() => {
   margin-top:.5rem; font-size:.88rem;
 }
 .obv-check-label { font-weight:bold; }
+
+/* --- 古典タートルズ表示 --- */
+.classic-turtle-panel {
+  margin-top:1rem;
+  background:#f3f6fb;
+  padding:.6rem;
+  border:1px solid #cbd5e1;
+  border-radius:.3rem;
+}
+.classic-turtle-panel h4 { margin:.1rem 0 .6rem; }
+.classic-turtle-controls {
+  display:flex;
+  gap:.8rem;
+  align-items:center;
+  flex-wrap:wrap;
+}
+.classic-turtle-controls input,
+.classic-turtle-controls select { padding:.3rem; border:1px solid #cbd5e1; border-radius:.3rem; }
+.classic-turtle-note { color:#64748b; font-size:.82rem; }
+.classic-turtle-summary {
+  display:flex;
+  gap:1rem;
+  flex-wrap:wrap;
+  margin-top:.6rem;
+  font-size:.9rem;
+  font-weight:bold;
+}
+.classic-profit { color:#2c7a2c; }
+.classic-loss { color:#c0392b; }
+.classic-trades { background:#fff; }
 </style>
