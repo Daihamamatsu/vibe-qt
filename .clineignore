@@ -1,0 +1,54 @@
+# JavaScript / Vite の依存関係とビルド生成物
+**/node_modules/
+**/dist/
+**/build/
+**/.vite/
+**/.cache/
+**/coverage/
+**/htmlcov/
+
+# Python のキャッシュ、仮想環境、テスト生成物
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.tox/
+**/.nox/
+**/.venv/
+**/venv/
+**/env/
+**/ENV/
+
+# 環境変数ファイル（共有用のサンプルは探索対象に残す）
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
+
+# ローカルデータベース
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+
+# ログ、一時ファイル、テスト出力
+**/*.log
+**/*.tmp
+**/*.temp
+**/*.swp
+**/.tmp/
+**/tmp/
+**/logs/
+
+# IDE / OS の一時ファイル
+.vscode/
+.idea/
+**/.DS_Store
+**/Thumbs.db
+
+# Docker / 開発ツールの生成物
+**/.docker/
+**/.eslintcache
+**/.stylelintcache
+**/.parcel-cache/
+**/.turbo/
