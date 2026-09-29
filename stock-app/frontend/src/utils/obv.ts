@@ -19,6 +19,91 @@ export interface ObvRow {
   obv: number;
 }
 
+export const DEFAULT_CLASSIC_TURTLE_OBV_X = 5;
+export const DEFAULT_CLASSIC_TURTLE_OBV_Y = 100;
+export const DEFAULT_CLASSIC_TURTLE_OBV_Z = 0.95;
+export type ClassicTurtleObvSide = 'long' | 'short';
+
+export interface ClassicTurtleObvFilterResult {
+  date: string;
+  passed: boolean;
+  x: number;
+  y: number;
+  z: number;
+  recentMaxObv: number | null;
+  recentMinObv: number | null;
+  percentileObv: number | null;
+  percentile: number | null;
+  side: ClassicTurtleObvSide;
+  historyAvailable: boolean;
+}
+
+/**
+ * 古典タートルズのブレイク日を、過去 OBV の強さで判定する。
+ * ブレイク日当日は参照しない。
+ * ロングは直前 X 日の最大値と上位 Z パーセンタイル、ショートは
+ * 直前 X 日の最小値と下位 (1-Z) パーセンタイルを比較する。
+ */
+export function evaluateClassicTurtleObvFilter(
+  obvRows: ObvRow[],
+  date: string,
+  x = DEFAULT_CLASSIC_TURTLE_OBV_X,
+  y = DEFAULT_CLASSIC_TURTLE_OBV_Y,
+  z = DEFAULT_CLASSIC_TURTLE_OBV_Z,
+  side: ClassicTurtleObvSide = 'long',
+): ClassicTurtleObvFilterResult | null {
+  const index = obvRows.findIndex(row => row.date === date);
+  if (index < 0) return null;
+
+  const validX = Number.isInteger(x) && x > 0;
+  const validY = Number.isInteger(y) && y > 0;
+  const validZ = Number.isFinite(z) && z >= 0 && z <= 1;
+  const historyAvailable = validX && validY && validZ && x <= y && index >= y;
+  if (!historyAvailable) {
+    return {
+      date,
+      passed: false,
+      x,
+      y,
+      z,
+      recentMaxObv: null,
+      recentMinObv: null,
+      percentileObv: null,
+      percentile: null,
+      side,
+      historyAvailable: false,
+    };
+  }
+
+  const priorValues = obvRows.slice(index - y, index).map(row => row.obv);
+  const sortedPriorValues = [...priorValues].sort((a, b) => a - b);
+  const recentValues = priorValues.slice(y - x);
+  const percentile = side === 'long' ? z : 1 - z;
+  const percentilePosition = (sortedPriorValues.length - 1) * percentile;
+  const lowerIndex = Math.floor(percentilePosition);
+  const upperIndex = Math.ceil(percentilePosition);
+  const fraction = percentilePosition - lowerIndex;
+  const percentileObv = lowerIndex === upperIndex
+    ? sortedPriorValues[lowerIndex]
+    : sortedPriorValues[lowerIndex] + (sortedPriorValues[upperIndex] - sortedPriorValues[lowerIndex]) * fraction;
+  const recentMaxObv = Math.max(...recentValues);
+  const recentMinObv = Math.min(...recentValues);
+
+  return {
+    date,
+    passed: side === 'long' ? recentMaxObv >= percentileObv : recentMinObv <= percentileObv,
+    x,
+    y,
+    z,
+    recentMaxObv,
+    recentMinObv,
+    percentileObv,
+    percentile,
+    side,
+    historyAvailable: true,
+  };
+}
+
 /**
  * OBV を全日分計算する。
  * 戻り値は引数の bars と同じ長さ・同じ順番 (日付昇順)。
