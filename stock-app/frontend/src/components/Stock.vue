@@ -295,6 +295,19 @@
           type="button"
           @click="clearClassicTradePeriod"
         >期間をクリア</button>
+        <label style="display:flex;gap:.35rem;align-items:center;">
+          <input type="checkbox" v-model="classicObvFilterEnabled" />
+          OBVフィルター
+        </label>
+        <label>OBV X（日）:
+          <input type="number" v-model.number="classicObvX" min="1" step="1" style="width:4.5rem;" />
+        </label>
+        <label>OBV Y（日）:
+          <input type="number" v-model.number="classicObvY" min="1" step="1" style="width:4.5rem;" />
+        </label>
+        <label>OBV Z（上位率）:
+          <input type="number" v-model.number="classicObvZ" min="0" max="1" step="0.01" style="width:5rem;" />
+        </label>
         <span class="classic-turtle-note">S1: 20日 / 決済10日、S2: 55日 / 決済20日、N: 20日Wilder</span>
       </div>
       <template v-if="classicTurtleEnabled">
@@ -304,6 +317,7 @@
           <span>SQN: {{ classicSqn === null ? '—' : classicSqn.value.toFixed(2) }}</span>
           <span v-if="classicSqn !== null">平均R: {{ classicSqn.meanRiskMultiple.toFixed(2) }} / σ: {{ classicSqn.standardDeviation.toFixed(2) }}</span>
           <span v-if="classicTradePeriodLabel">対象期間: {{ classicTradePeriodLabel }}</span>
+          <span v-if="classicObvFilterEnabled">OBV条件: 直前{{ classicObvXNumber }}日最大 ≥ 直前{{ classicObvYNumber }}日 {{ (classicObvZNumber * 100).toFixed(0) }}パーセンタイル</span>
           <span v-if="classicLatestPosition">
             保有: {{ classicLatestPosition.side === 'long' ? 'ロング' : 'ショート' }} {{ classicLatestPosition.entries.length }}ユニット
             （{{ classicHoldingShares }}株）
@@ -378,7 +392,14 @@ import {
   saveClassicTurtleSettings,
 } from '../utils/classicTurtleSettings';
 // OBV (On-Balance Volume) 計算モジュール (Issue #61 / タートル BUY ブレイクの OBV 検証 Issue #63)
-import { computeObv, computeBreakoutObvChecks } from '../utils/obv';
+import {
+  DEFAULT_CLASSIC_TURTLE_OBV_X,
+  DEFAULT_CLASSIC_TURTLE_OBV_Y,
+  DEFAULT_CLASSIC_TURTLE_OBV_Z,
+  computeObv,
+  computeBreakoutObvChecks,
+  evaluateClassicTurtleObvFilter,
+} from '../utils/obv';
 import type { BreakoutObvCheck } from '../utils/obv';
 // タートル戦略の銘柄ごとの保存状態（localStorage 永続化。Issue #53）
 import {
@@ -712,6 +733,10 @@ const classicAccountEquityYen = ref(classicSettings.value.accountEquityYen);
 const classicUsdJpyRate = ref<number | string>(classicSettings.value.usdJpyRate);
 const classicTradeStartDate = ref('');
 const classicTradeEndDate = ref('');
+const classicObvFilterEnabled = ref(true);
+const classicObvX = ref<number | string>(DEFAULT_CLASSIC_TURTLE_OBV_X);
+const classicObvY = ref<number | string>(DEFAULT_CLASSIC_TURTLE_OBV_Y);
+const classicObvZ = ref<number | string>(DEFAULT_CLASSIC_TURTLE_OBV_Z);
 
 const classicTurtleCurrency = computed(() => getClassicTurtleCurrency(symbol.value));
 const classicUsdJpyRateNumber = computed(() => {
@@ -741,6 +766,19 @@ const classicAccountValue = computed<number | null>({
 const classicAccountValueNumber = computed<number | null>(() => {
   const value = classicAccountValue.value;
   return value !== null && Number.isFinite(value) ? value : null;
+});
+
+const classicObvXNumber = computed(() => {
+  const value = typeof classicObvX.value === 'number' ? classicObvX.value : Number(classicObvX.value);
+  return Number.isInteger(value) && value > 0 ? value : DEFAULT_CLASSIC_TURTLE_OBV_X;
+});
+const classicObvYNumber = computed(() => {
+  const value = typeof classicObvY.value === 'number' ? classicObvY.value : Number(classicObvY.value);
+  return Number.isInteger(value) && value > 0 ? value : DEFAULT_CLASSIC_TURTLE_OBV_Y;
+});
+const classicObvZNumber = computed(() => {
+  const value = typeof classicObvZ.value === 'number' ? classicObvZ.value : Number(classicObvZ.value);
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : DEFAULT_CLASSIC_TURTLE_OBV_Z;
 });
 
 watch([classicAccountEquityYen, classicUsdJpyRateNumber], () => {
@@ -787,8 +825,24 @@ const classicVisibleTrades = computed<ClassicTurtleTrade[]>(() =>
     // 取引履歴は初回エントリー日が新しいものから表示する。
     .sort((a, b) => (b.entries[0]?.date ?? '').localeCompare(a.entries[0]?.date ?? '')),
 );
+const classicObvFilteredTrades = computed<ClassicTurtleTrade[]>(() => {
+  if (!classicObvFilterEnabled.value) return classicVisibleTrades.value;
+  return classicVisibleTrades.value.filter((trade) => {
+    const entryDate = trade.entries[0]?.date;
+    if (!entryDate) return false;
+    const result = evaluateClassicTurtleObvFilter(
+      obv.value,
+      entryDate,
+      classicObvXNumber.value,
+      classicObvYNumber.value,
+      classicObvZNumber.value,
+      trade.side,
+    );
+    return result?.passed === true;
+  });
+});
 const classicFilteredTrades = computed<ClassicTurtleTrade[]>(() =>
-  filterClassicTurtleTrades(classicVisibleTrades.value, classicTradeSide.value).filter((trade) => {
+  filterClassicTurtleTrades(classicObvFilteredTrades.value, classicTradeSide.value).filter((trade) => {
     const entryDate = trade.entries[0]?.date;
     if (!entryDate) return false;
     if (classicTradeStartDate.value && entryDate < classicTradeStartDate.value) return false;

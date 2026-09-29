@@ -57,6 +57,25 @@
 
 古典タートルズパネルでは、System 1 / System 2、取引方向（ロングのみ / ショートのみ / 両方）、取引履歴の開始日・終了日を指定できます。取引方向の既定値は両方、日付は両方が空欄で、従来どおり全期間・全方向の取引履歴を表示します。期間を指定すると、初回エントリー日がその期間内にある取引だけを履歴、完了取引数、損益、SQN の対象にします。System 1 / System 2 と取引方向の選択も同時に適用されます。
 
+### 古典タートルズの OBV 取引フィルター
+
+古典タートルズパネルの「OBVフィルター」を ON にすると、初回ブレイク日より前の OBV を使って取引を絞り込みます。既定値は `X=5`、`Y=100`、`Z=0.95` です。
+
+```text
+ロング : 直前X日のOBV最大値 >= 直前Y日のOBVのZパーセンタイル
+ショート: 直前X日のOBV最小値 <= 直前Y日のOBVの(1-Z)パーセンタイル
+```
+
+- X: ブレイク日の直前 X 取引日の OBV から最大値を取得します。
+- Y: ブレイク日の直前 Y 取引日の OBV を比較分布にします。
+- Z: 比較分布のパーセンタイルを 0〜1 で指定します（`0.95` = 95 パーセンタイル）。
+- ロングは上位 Z パーセンタイル、ショートは下位 `1-Z` パーセンタイルを使います（既定値ではショートは 5 パーセンタイル）。
+- ショートはブレイク日の直前 X 取引日の OBV 最小値が、直前 Y 取引日の下位パーセンタイル以下の場合に採用します。
+- ブレイク日当日の OBV は判定に含めません。
+- X または Y の履歴が不足する場合、X > Y の場合、不正な値の場合は取引を採用しません。
+
+OBV フィルター、System、方向、期間の条件は組み合わせて適用され、フィルター後の取引だけが履歴、完了取引数、損益、SQN の対象になります。
+
 SQN は完了済み取引の `R`（`riskMultiple`）を使い、次の式で計算します。
 
 ```text
@@ -170,7 +189,7 @@ npm run typecheck # 型チェック
 | `stock-app/frontend/src/utils/classicTurtle.ts` | 古典タートルズのバックテスト、取引履歴、`computeClassicTurtleSqn`（R倍率によるSQN） |
 | `stock-app/frontend/src/utils/classicTurtleSettings.ts` | 古典タートルズの共通円資金、為替レート、JPY/USD換算、設定保存 |
 | `stock-app/frontend/src/utils/classicTurtleSettings.test.ts` | 既定値、銘柄通貨判定、資金換算、設定保存のユニットテスト |
-| `stock-app/frontend/src/utils/obv.ts` | OBV 計算（`computeObv`、Issue #61）と BUY ブレイクの OBV 検証 ①②③（Issue #63） |
+| `stock-app/frontend/src/utils/obv.ts` | OBV 計算（`computeObv`、Issue #61）、BUY ブレイクの OBV 検証 ①②③（Issue #63）、古典タートルズ取引フィルター |
 | `stock-app/frontend/src/components/Stock.vue` | タートルパネル UI と ECharts 描画（DC20/DC10、BUY/EXIT マーカー、ATR パネル、markLine、買い増し / 計画 EXIT マーカー） |
 | `stock-app/frontend/src/utils/turtle.test.ts` | vitest によるロジック検証 |
 | `README.md`（備考 Issue #29 セクション） | 仕様まとめ |

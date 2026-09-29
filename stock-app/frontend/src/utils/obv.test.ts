@@ -13,9 +13,15 @@ import {
   computeBreakoutObvChecks,
   computeObv,
   computeObv20DayHighs,
+  evaluateClassicTurtleObvFilter,
   evaluateBreakoutObv,
 } from './obv';
 import type { ObvRow } from './obv';
+import {
+  DEFAULT_CLASSIC_TURTLE_OBV_X,
+  DEFAULT_CLASSIC_TURTLE_OBV_Y,
+  DEFAULT_CLASSIC_TURTLE_OBV_Z,
+} from './obv';
 
 /** 指定した終値・出来高の 1 本バーを生成 (始値 = 高値 = 安値 = 終値)。 */
 function makeBar(i: number, close: number, volume: number | null): Bar {
@@ -191,6 +197,80 @@ describe('computeObv20DayHighs', () => {
     expect(highs[29].isHigh).toBe(false);
     expect(highs[30].priorMax20).toBe(1000);
     expect(highs[30].isHigh).toBe(true);
+  });
+});
+
+describe('evaluateClassicTurtleObvFilter', () => {
+  function rows(values: number[]): ObvRow[] {
+    return values.map((obv, index) => ({
+      date: `2026-10-${String(index + 1).padStart(2, '0')}`,
+      obv,
+    }));
+  }
+
+  it('既定値は X=5、Y=100、Z=0.95 で、直前X日の最大値を判定する', () => {
+    const obvRows = rows([...Array.from({ length: 95 }, (_, i) => i), 95, 96, 97, 98, 99, 100]);
+    const result = evaluateClassicTurtleObvFilter(obvRows, obvRows[100].date);
+
+    expect(DEFAULT_CLASSIC_TURTLE_OBV_X).toBe(5);
+    expect(DEFAULT_CLASSIC_TURTLE_OBV_Y).toBe(100);
+    expect(DEFAULT_CLASSIC_TURTLE_OBV_Z).toBe(0.95);
+    expect(result).toMatchObject({
+      passed: true,
+      recentMaxObv: 99,
+      percentileObv: 94.05,
+      historyAvailable: true,
+    });
+  });
+
+  it('ブレイク日当日の OBV を含めず、直前X日の最大値で判定する', () => {
+    const values = Array.from({ length: 10 }, (_, i) => i);
+    values.push(100);
+    const obvRows = rows(values);
+    const result = evaluateClassicTurtleObvFilter(obvRows, obvRows[10].date, 3, 10, 0.95);
+
+    expect(result?.recentMaxObv).toBe(9);
+    expect(result?.percentileObv).toBeCloseTo(8.55);
+    expect(result?.passed).toBe(true);
+  });
+
+  it('直前X日の最大値が直前Y日のZパーセンタイル未満なら除外する', () => {
+    const obvRows = rows([...Array.from({ length: 95 }, (_, i) => i), 1, 2, 3, 4, 5, 999]);
+    const result = evaluateClassicTurtleObvFilter(obvRows, obvRows[100].date, 5, 100, 0.95);
+
+    expect(result?.recentMaxObv).toBe(5);
+    expect(result?.percentileObv).toBeCloseTo(89.05);
+    expect(result?.passed).toBe(false);
+  });
+
+  it('ショートは直前X日の最小値と下位(1-Z)パーセンタイルを比較する', () => {
+    const obvRows = rows([100, 99, 98, 97, 96, 95, 94, 93, 92, 91, 90]);
+    const result = evaluateClassicTurtleObvFilter(obvRows, obvRows[10].date, 3, 10, 0.95, 'short');
+
+    expect(result).toMatchObject({
+      side: 'short',
+      recentMinObv: 91,
+      percentile: 0.050000000000000044,
+      percentileObv: 91.45,
+      passed: true,
+      historyAvailable: true,
+    });
+  });
+
+  it('ショートの下落OBVが下位パーセンタイル以下なら採用する', () => {
+    const obvRows = rows([100, 99, 98, 97, 96, 95, 94, 93, 92, 1, 90]);
+    const result = evaluateClassicTurtleObvFilter(obvRows, obvRows[10].date, 3, 10, 0.95, 'short');
+
+    expect(result?.recentMinObv).toBe(1);
+    expect(result?.percentileObv).toBeCloseTo(41.95);
+    expect(result?.passed).toBe(true);
+  });
+
+  it('履歴不足または不正なパラメータは不成立にする', () => {
+    const obvRows = rows([1, 2, 3]);
+    expect(evaluateClassicTurtleObvFilter(obvRows, obvRows[2].date, 2, 5, 0.95)?.historyAvailable).toBe(false);
+    expect(evaluateClassicTurtleObvFilter(obvRows, obvRows[2].date, 6, 5, 0.95)?.historyAvailable).toBe(false);
+    expect(evaluateClassicTurtleObvFilter(obvRows, obvRows[2].date, 1, 2, 1.1)?.historyAvailable).toBe(false);
   });
 });
 
