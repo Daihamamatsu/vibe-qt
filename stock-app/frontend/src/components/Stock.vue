@@ -157,6 +157,23 @@
             </tbody>
           </table>
         </div>
+        <div v-if="classicTurtleEnabled" class="turtle-section classic-hover-section">
+          <div class="turtle-section-header">古典タートルズ</div>
+          <table class="info-table">
+            <tbody>
+              <tr><th>日付</th><td>{{ hoverClassicDay ? hoverClassicDay.date : '—' }}</td></tr>
+              <tr><th>S1 状態</th><td>{{ classicPositionLabel(hoverClassicDay?.position, 'system1') }}</td></tr>
+              <tr><th>S1 エントリー</th><td>{{ fmtClassicEntryLine(hoverClassicDay, 'system1') }}</td></tr>
+              <tr><th>S1 EXIT（チャネル）</th><td>{{ fmtClassicExitLine(hoverClassicDay, 'system1') }}</td></tr>
+              <tr><th>S2 状態</th><td>{{ classicPositionLabel(hoverClassicDay?.position, 'system2') }}</td></tr>
+              <tr><th>S2 エントリー</th><td>{{ fmtClassicEntryLine(hoverClassicDay, 'system2') }}</td></tr>
+              <tr><th>S2 EXIT（チャネル）</th><td>{{ fmtClassicExitLine(hoverClassicDay, 'system2') }}</td></tr>
+              <tr><th>N（20日 Wilder）</th><td>{{ fmtPrice(hoverClassicDay?.indicator.n) }}</td></tr>
+              <tr><th>EXIT（エントリー時2N）</th><td>{{ fmtPrice(hoverClassicInitialStop) }}</td></tr>
+              <tr><th>EXIT（直近計算2N）</th><td>{{ fmtPrice(hoverClassicCurrentStop) }}</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -382,7 +399,7 @@ import { shouldAutoRefreshYahoo } from '../utils/freshness';
 import { computePyramidTargets, computeTurtle, computeTurtlePlan, computeUnitShares } from '../utils/turtle';
 import type { PyramidTargets, TurtleBar, TurtlePlan, TurtlePlanLevel } from '../utils/turtle';
 import { backtestClassicTurtle, computeClassicAverageEntryPrice, computeClassicTurtleSqn, filterClassicTurtleTrades } from '../utils/classicTurtle';
-import type { ClassicTradeSideFilter, ClassicTurtleBacktest, ClassicTurtleEntry, ClassicTurtleTrade, TurtleSystem } from '../utils/classicTurtle';
+import type { ClassicTradeSideFilter, ClassicTurtleBacktest, ClassicTurtleDay, ClassicTurtleEntry, ClassicTurtlePosition, ClassicTurtleTrade, TurtleSystem } from '../utils/classicTurtle';
 import {
   DEFAULT_USD_JPY_RATE,
   convertAccountEquity,
@@ -825,6 +842,12 @@ const classicVisibleTrades = computed<ClassicTurtleTrade[]>(() =>
     // 取引履歴は初回エントリー日が新しいものから表示する。
     .sort((a, b) => (b.entries[0]?.date ?? '').localeCompare(a.entries[0]?.date ?? '')),
 );
+// チャート上の古典マーカーにも、パネルの取引方向選択を適用する。
+const classicChartTrades = computed<ClassicTurtleTrade[]>(() =>
+  classicVisibleTrades.value.filter(trade =>
+    classicTradeSide.value === 'both' || trade.side === classicTradeSide.value,
+  ),
+);
 const classicObvFilteredTrades = computed<ClassicTurtleTrade[]>(() => {
   if (!classicObvFilterEnabled.value) return classicVisibleTrades.value;
   return classicVisibleTrades.value.filter((trade) => {
@@ -1068,6 +1091,20 @@ const hoverTurtle = computed<TurtleBar | null>(() => {
   if (i === null || i < 0 || i >= turtle.value.length) return null;
   return turtle.value[i];
 });
+// 同じローソク足の古典タートルズ行。日付で検索し、表示順の差に依存しない。
+const hoverClassicDay = computed<ClassicTurtleDay | null>(() => {
+  const date = hoverRecord.value?.date;
+  if (!date) return null;
+  return classicTurtle.value.days.find(day => day.date === date) ?? null;
+});
+// ホバー中の古典タートルズのエントリー時2N EXIT。
+const hoverClassicInitialStop = computed<number | null>(() => {
+  const position = hoverClassicDay.value?.position;
+  const first = position?.entries[0];
+  return first ? classicStopPrice(first) : null;
+});
+// ホバー中の古典タートルズの直近計算2N EXIT。
+const hoverClassicCurrentStop = computed<number | null>(() => hoverClassicDay.value?.position?.stopPrice ?? null);
 // 同じローソク足の OBV 値 (Issue #61)
 const hoverObv = computed<number | null>(() => {
   const i = hoverIndex.value;
@@ -1119,6 +1156,29 @@ function fmtMoney(v: number, currency: 'JPY' | 'USD' = 'JPY'): string {
 // 古典タートルズの各エントリーに対応する2N損切り価格を表示する。
 function classicStopPrice(entry: Pick<ClassicTurtleEntry, 'side' | 'price' | 'n'>): number {
   return entry.side === 'long' ? entry.price - 2 * entry.n : entry.price + 2 * entry.n;
+}
+
+function classicPositionLabel(position: ClassicTurtlePosition | null | undefined, system: TurtleSystem): string {
+  if (!position || position.system !== system) return 'ポジションなし';
+  return position.side === 'long' ? 'ロング保有中' : 'ショート保有中';
+}
+
+function fmtClassicEntryLine(day: ClassicTurtleDay | null, system: TurtleSystem): string {
+  if (!day) return '—';
+  const position = day.position?.system === system ? day.position : null;
+  if (position?.side === 'long') return `上限 ${fmtPrice(system === 'system1' ? day.indicator.system1LongEntry : day.indicator.system2LongEntry)}`;
+  if (position?.side === 'short') return `下限 ${fmtPrice(system === 'system1' ? day.indicator.system1ShortEntry : day.indicator.system2ShortEntry)}`;
+  const upper = system === 'system1' ? day.indicator.system1LongEntry : day.indicator.system2LongEntry;
+  const lower = system === 'system1' ? day.indicator.system1ShortEntry : day.indicator.system2ShortEntry;
+  return `上限 ${fmtPrice(upper)} / 下限 ${fmtPrice(lower)}`;
+}
+
+function fmtClassicExitLine(day: ClassicTurtleDay | null, system: TurtleSystem): string {
+  if (!day) return '—';
+  const position = day.position?.system === system ? day.position : null;
+  if (position?.side === 'long') return `下限 ${fmtPrice(system === 'system1' ? day.indicator.system1LongExit : day.indicator.system2LongExit)}`;
+  if (position?.side === 'short') return `上限 ${fmtPrice(system === 'system1' ? day.indicator.system1ShortExit : day.indicator.system2ShortExit)}`;
+  return '—（ポジションなし）';
 }
 
 interface ClassicEntryRow {
@@ -1331,12 +1391,8 @@ const chartOptions = computed<EChartsOption>(() => {
       if (classicTurtleSystem.value !== 'system1') widenRange(row.system2LongEntry);
       if (classicTurtleSystem.value !== 'system2') widenRange(row.system1ShortEntry);
       if (classicTurtleSystem.value !== 'system1') widenRange(row.system2ShortEntry);
-      if (classicTurtleSystem.value !== 'system2') widenRange(row.system1LongExit);
-      if (classicTurtleSystem.value !== 'system2') widenRange(row.system1ShortExit);
-      if (classicTurtleSystem.value !== 'system1') widenRange(row.system2LongExit);
-      if (classicTurtleSystem.value !== 'system1') widenRange(row.system2ShortExit);
     }
-    for (const trade of classicVisibleTrades.value) {
+    for (const trade of classicChartTrades.value) {
       for (const entry of trade.entries) widenRange(entry.price);
       widenRange(trade.exit?.price ?? null);
     }
@@ -1521,15 +1577,49 @@ const chartOptions = computed<EChartsOption>(() => {
       for (const entry of trade.entries) widenRange(entry.price);
       widenRange(trade.exit?.price ?? null);
     }
-    // 取引期間中の2N損切りラインも価格レンジに含めて、ラインを欠けさせない。
-    for (const day of classicTurtle.value.days) {
-      if (day.position !== null && (classicTurtleSystem.value === 'both' || day.position.system === classicTurtleSystem.value)) {
-        widenRange(day.position.stopPrice);
-      }
-    }
 
     const classic = classicTurtle.value;
     const showSystem = (system: TurtleSystem) => classicTurtleSystem.value === 'both' || classicTurtleSystem.value === system;
+    const classicLineValues = (
+      system: TurtleSystem,
+      line: 'entryLong' | 'entryShort' | 'exitLong' | 'exitShort',
+    ): (number | null)[] => classic.days.map(day => {
+      const position = day.position?.system === system
+        && (classicTradeSide.value === 'both' || day.position.side === classicTradeSide.value)
+        ? day.position
+        : null;
+      const hasPositionForSystem = position !== null;
+      const indicator = day.indicator;
+      if (line === 'entryLong') {
+        if (hasPositionForSystem && position.side !== 'long') return null;
+        return system === 'system1' ? indicator.system1LongEntry : indicator.system2LongEntry;
+      }
+      if (line === 'entryShort') {
+        if (hasPositionForSystem && position.side !== 'short') return null;
+        return system === 'system1' ? indicator.system1ShortEntry : indicator.system2ShortEntry;
+      }
+      if (!position) return null;
+      if (line === 'exitLong') {
+        return position.side === 'long'
+          ? (system === 'system1' ? indicator.system1LongExit : indicator.system2LongExit)
+          : null;
+      }
+      return position.side === 'short'
+        ? (system === 'system1' ? indicator.system1ShortExit : indicator.system2ShortExit)
+        : null;
+    });
+    for (const day of classic.days) {
+      const position = day.position
+        && (classicTradeSide.value === 'both' || day.position.side === classicTradeSide.value)
+        ? day.position
+        : null;
+      if (!position || !showSystem(position.system)) continue;
+      widenRange(
+        position.side === 'long'
+          ? (position.system === 'system1' ? day.indicator.system1LongExit : day.indicator.system2LongExit)
+          : (position.system === 'system1' ? day.indicator.system1ShortExit : day.indicator.system2ShortExit),
+      );
+    }
     const addClassicLine = (
       name: string,
       values: (number | null)[],
@@ -1550,19 +1640,19 @@ const chartOptions = computed<EChartsOption>(() => {
       });
     };
     if (showSystem('system1')) {
-      addClassicLine('古典 S1 DC20 上限', classic.indicators.map(row => row.system1LongEntry), '#c0392b');
-      addClassicLine('古典 S1 DC20 下限', classic.indicators.map(row => row.system1ShortEntry), '#c0392b');
-      addClassicLine('古典 S1 決済10 下限', classic.indicators.map(row => row.system1LongExit), '#e74c3c', 'dashed');
-      addClassicLine('古典 S1 決済10 上限', classic.indicators.map(row => row.system1ShortExit), '#e74c3c', 'dashed');
+      addClassicLine('古典 S1 DC20 上限', classicLineValues('system1', 'entryLong'), '#c0392b');
+      addClassicLine('古典 S1 DC20 下限', classicLineValues('system1', 'entryShort'), '#2980b9');
+      addClassicLine('古典 S1 決済10 下限', classicLineValues('system1', 'exitLong'), '#5dade2', 'dashed');
+      addClassicLine('古典 S1 決済10 上限', classicLineValues('system1', 'exitShort'), '#e67e22', 'dashed');
     }
     if (showSystem('system2')) {
-      addClassicLine('古典 S2 DC55 上限', classic.indicators.map(row => row.system2LongEntry), '#8e44ad');
-      addClassicLine('古典 S2 DC55 下限', classic.indicators.map(row => row.system2ShortEntry), '#8e44ad');
-      addClassicLine('古典 S2 決済20 下限', classic.indicators.map(row => row.system2LongExit), '#9b59b6', 'dashed');
-      addClassicLine('古典 S2 決済20 上限', classic.indicators.map(row => row.system2ShortExit), '#9b59b6', 'dashed');
+      addClassicLine('古典 S2 DC55 上限', classicLineValues('system2', 'entryLong'), '#b7950b');
+      addClassicLine('古典 S2 DC55 下限', classicLineValues('system2', 'entryShort'), '#8e44ad');
+      addClassicLine('古典 S2 決済20 下限', classicLineValues('system2', 'exitLong'), '#bb8fce', 'dashed');
+      addClassicLine('古典 S2 決済20 上限', classicLineValues('system2', 'exitShort'), '#b9770e', 'dashed');
     }
-    const entries = classicVisibleTrades.value.flatMap(trade => trade.entries.map(entry => ({ trade, entry })));
-    const exits = classicVisibleTrades.value
+    const entries = classicChartTrades.value.flatMap(trade => trade.entries.map(entry => ({ trade, entry })));
+    const exits = classicChartTrades.value
       .filter(trade => trade.exit !== null)
       .map(trade => ({ trade, exit: trade.exit! }));
     series.push({
@@ -1578,20 +1668,6 @@ const chartOptions = computed<EChartsOption>(() => {
         return { value: [entry.date, high + markerGapPrice], itemStyle: { color: entry.side === 'long' ? '#d35400' : '#2980b9' }, label: { show: true, position: 'top', formatter: `${trade.system === 'system1' ? 'S1' : 'S2'} ${entry.side === 'long' ? 'L' : 'S'}${entry.kind === 'pyramid' ? '+' : ''}`, fontSize: 9 } };
       }),
     });
-    for (const system of (classicTurtleSystem.value === 'both' ? ['system1', 'system2'] as TurtleSystem[] : [classicTurtleSystem.value])) {
-      series.push({
-        name: `古典 ${system === 'system1' ? 'S1' : 'S2'} 2N損切り`,
-        type: 'line',
-        xAxisIndex: 0,
-        yAxisIndex: 0,
-        data: classic.days.map(day => day.position?.system === system ? day.position.stopPrice : null),
-        symbol: 'none',
-        showSymbol: false,
-        connectNulls: false,
-        lineStyle: { type: 'dashed', width: 1.5, color: system === 'system1' ? '#e67e22' : '#2980b9' },
-        itemStyle: { color: system === 'system1' ? '#e67e22' : '#2980b9' },
-      });
-    }
     series.push({
       name: '古典決済',
       type: 'scatter',
