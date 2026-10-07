@@ -55,6 +55,7 @@ class FavoriteStock(models.Model):
     list = models.ForeignKey(StockList, on_delete=models.CASCADE, related_name='favorites')
     symbol = models.CharField(max_length=10)
     name = models.CharField(max_length=200, blank=True, default='')
+    order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

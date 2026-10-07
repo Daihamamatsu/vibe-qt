@@ -74,7 +74,18 @@
         <ul style="margin:.5rem 0 0;padding:0;">
           <li v-for="f in activeGroup?.stocks ?? []" :key="f.symbol" style="margin:.15rem 0;">
             <a href="#" :style="{ color:'#1a73e8' }" @click.prevent="symbol = f.symbol">{{ f.symbol }}</a>
-            <span v-if="f.name" style="color:#555;">{{ f.name }}</span>
+            <button
+              :disabled="favoriteBusy || activeGroup === null || activeGroup.stocks[0]?.symbol === f.symbol"
+              style="margin-left:.5rem;"
+              title="一つ上へ移動"
+              @click="moveFavorite(f.symbol, 'up')"
+            >↑</button>
+            <button
+              :disabled="favoriteBusy || activeGroup === null || activeGroup.stocks[activeGroup.stocks.length - 1]?.symbol === f.symbol"
+              title="一つ下へ移動"
+              @click="moveFavorite(f.symbol, 'down')"
+            >↓</button>
+            <span v-if="f.name" style="margin-left:.5rem;color:#555;">{{ f.name }}</span>
             <button :disabled="favoriteBusy" style="margin-left:.5rem;" title="このリストから削除" @click="removeFavorite(f.symbol)">✕</button>
           </li>
           <li v-if="(activeGroup?.stocks.length ?? 0) === 0" style="color:#888;">このリストには銘柄がありません</li>
@@ -437,8 +448,10 @@ import {
   fetchFavoriteGroups,
   isValidListName,
   isValidSymbol,
+  moveStockInList,
   removeFavoriteStock,
   renameFavoriteList,
+  updateFavoriteOrder,
 } from '../utils/favorites';
 import type { FavoriteGroup } from '../utils/favorites';
 
@@ -1980,6 +1993,31 @@ async function removeFavorite(target: string) {
     await fetchFavorites();
   } catch (e) {
     console.error('お気に入り削除エラー:', e);
+  } finally {
+    favoriteBusy.value = false;
+  }
+}
+
+// アクティブリスト内の銘柄を一つ上または下へ移動し、順序を保存する。
+async function moveFavorite(target: string, direction: 'up' | 'down') {
+  if (favoriteBusy.value || activeListId.value === null || activeGroup.value === null) return;
+  const nextGroups = moveStockInList(favoriteGroups.value, activeListId.value, target, direction);
+  if (nextGroups === favoriteGroups.value) return;
+  const nextGroup = nextGroups.find((group) => group.id === activeListId.value);
+  if (nextGroup === undefined) return;
+
+  favoriteBusy.value = true;
+  favoriteMessage.value = '';
+  favoriteGroups.value = nextGroups as FavoriteGroup[];
+  try {
+    await updateFavoriteOrder(
+      activeListId.value,
+      nextGroup.stocks.map((stock) => stock.symbol),
+    );
+  } catch (e) {
+    favoriteMessage.value = 'お気に入りの並び順を保存できませんでした';
+    await fetchFavorites();
+    console.error('お気に入り並び順更新エラー:', e);
   } finally {
     favoriteBusy.value = false;
   }
