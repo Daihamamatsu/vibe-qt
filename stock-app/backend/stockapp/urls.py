@@ -2,6 +2,7 @@ from django.urls import path
 from stockapp.app.views import (
     favorite_delete,
     favorite_list_detail,
+    favorite_order,
     favorite_lists,
     favorites,
     moving_average,
@@ -32,6 +33,7 @@ urlpatterns = [
     path('api/favorite-lists/<int:list_id>/', favorite_list_detail),
     # お気に入り銘柄（リスト別）: 削除は /api/favorites/<list_id>/<symbol>/
     path('api/favorites/', favorites),
+    path('api/favorites/<int:list_id>/order/', favorite_order),
     path('api/favorites/<int:list_id>/<str:symbol>/', favorite_delete),
     path('api/stocks/', stock_list_all),
 ]

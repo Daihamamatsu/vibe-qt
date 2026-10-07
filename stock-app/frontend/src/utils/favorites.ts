@@ -87,6 +87,28 @@ export function removeStockFromList(
   return changed ? next : groups;
 }
 
+/** 指定リスト内の銘柄を一つ上または下へ移動したコピーを返す。 */
+export function moveStockInList(
+  groups: readonly FavoriteGroup[],
+  listId: number,
+  symbol: string,
+  direction: 'up' | 'down',
+): readonly FavoriteGroup[] {
+  const target = symbol.trim().toUpperCase();
+  let changed = false;
+  const next = groups.map((group) => {
+    if (group.id !== listId) return group;
+    const index = indexOfStock(group.stocks, target);
+    const nextIndex = direction === 'up' ? index - 1 : index + 1;
+    if (index === -1 || nextIndex < 0 || nextIndex >= group.stocks.length) return group;
+    const stocks = [...group.stocks];
+    [stocks[index], stocks[nextIndex]] = [stocks[nextIndex], stocks[index]];
+    changed = true;
+    return { ...group, stocks };
+  });
+  return changed ? next : groups;
+}
+
 /** バックエンド POST /api/favorites/ 応答ステータスに応じたユーザー向けエラーメッセージを返す。 */
 export function favoriteErrorMessage(status?: number, detail?: string): string {
   switch (status) {
@@ -158,4 +180,11 @@ export async function addFavoriteStock(
 /** DELETE /api/favorites/<list_id>/<symbol>/ — リストから銘柄を削除する。 */
 export async function removeFavoriteStock(listId: number, symbol: string): Promise<void> {
   await axios.delete(`/api/favorites/${listId}/${symbol.trim().toUpperCase()}/`);
+}
+
+/** PATCH /api/favorites/<list_id>/order/ — リスト内の銘柄順序を保存する。 */
+export async function updateFavoriteOrder(listId: number, symbols: readonly string[]): Promise<void> {
+  await axios.patch(`/api/favorites/${listId}/order/`, {
+    symbols: symbols.map((symbol) => symbol.trim().toUpperCase()),
+  });
 }

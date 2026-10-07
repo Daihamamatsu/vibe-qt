@@ -1,3 +1,4 @@
+from django.db import transaction
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -173,7 +174,9 @@ def favorites(request):
         # 後日の株価取得 (fetch_and_save) で StockMeta 更新時に自動反映される
         meta = StockMeta.objects.filter(symbol=symbol).first()
         name = meta.name if meta is not None else ''
-        FavoriteStock.objects.create(list=stock_list, symbol=symbol, name=name)
+        last_favorite = FavoriteStock.objects.filter(list=stock_list).order_by('-order', '-id').first()
+        next_order = last_favorite.order + 1 if last_favorite is not None else 0
+        FavoriteStock.objects.create(list=stock_list, symbol=symbol, name=name, order=next_order)
         return Response(
             {'symbol': symbol, 'name': name, 'list_id': list_id},
             status=status.HTTP_201_CREATED,
@@ -184,12 +187,53 @@ def favorites(request):
         s.id: {'id': s.id, 'name': s.name, 'stocks': []}
         for s in StockList.objects.order_by('created_at', 'id')
     }
-    favorites_qs = FavoriteStock.objects.order_by('created_at', 'symbol')
+    favorites_qs = FavoriteStock.objects.order_by('list_id', 'order', 'created_at', 'id')
     for f in favorites_qs:
         item = grouped.get(f.list_id)
         if item is not None:
             item['stocks'].append({'symbol': f.symbol, 'name': f.name})
     return Response(list(grouped.values()))
+
+
+@api_view(['PATCH'])
+def favorite_order(request, list_id):
+    """PATCH /api/favorites/<list_id>/order/ — リスト内の銘柄順序を更新する。
+
+    リクエストボディ: {"symbols": ["MSFT", "AAPL", "GOOG"]}
+    配列には対象リストの全銘柄を重複なく一度ずつ指定する。
+    """
+    stock_list = StockList.objects.filter(id=list_id).first()
+    if stock_list is None:
+        return Response({'detail': 'list not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    data = request.data if isinstance(request.data, dict) else {}
+    symbols = data.get('symbols')
+    if not isinstance(symbols, list) or not all(isinstance(symbol, str) for symbol in symbols):
+        return Response({'detail': 'symbols must be a list'}, status=status.HTTP_400_BAD_REQUEST)
+
+    normalized = [symbol.strip().upper() for symbol in symbols]
+    if (
+        len(normalized) != len(set(normalized))
+        or not all(SYMBOL_RE.match(symbol) for symbol in normalized)
+    ):
+        return Response({'detail': 'invalid symbols'}, status=status.HTTP_400_BAD_REQUEST)
+
+    favorites = list(FavoriteStock.objects.filter(list=stock_list).order_by('order', 'created_at', 'id'))
+    current_symbols = {favorite.symbol for favorite in favorites}
+    if set(normalized) != current_symbols or len(normalized) != len(current_symbols):
+        return Response(
+            {'detail': 'symbols must contain all favorites in this list exactly once'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    favorites_by_symbol = {favorite.symbol: favorite for favorite in favorites}
+    with transaction.atomic():
+        for order, symbol in enumerate(normalized):
+            favorite = favorites_by_symbol[symbol]
+            if favorite.order != order:
+                FavoriteStock.objects.filter(pk=favorite.pk).update(order=order)
+
+    return Response({'list_id': list_id, 'symbols': normalized})
 
 
 @api_view(['DELETE'])

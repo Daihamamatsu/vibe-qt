@@ -210,8 +210,8 @@ def test_favorites_grouped_includes_empty_lists(api_client, db):
     assert list2["stocks"] == []
 
 
-def test_favorites_stocks_ordered_by_created_at(api_client, db):
-    """リスト内の銘柄は登録日付 (created_at) 順に並ぶこと。"""
+def test_favorites_stocks_ordered_by_saved_order(api_client, db):
+    """リスト内の銘柄は保存された並び順に並ぶこと。"""
     _make_favorite("MSFT", created_at=datetime.datetime(2026, 9, 1, 9, 0), list_name="リスト3")
     _make_favorite("AAPL", created_at=datetime.datetime(2026, 9, 1, 12, 0), list_name="リスト3")
     _make_favorite("GOOG", created_at=datetime.datetime(2026, 9, 1, 15, 0), list_name="リスト3")
@@ -220,6 +220,64 @@ def test_favorites_stocks_ordered_by_created_at(api_client, db):
     list3 = next(item for item in response.json() if item["name"] == "リスト3")
     assert [s["symbol"] for s in list3["stocks"]] == ["MSFT", "AAPL", "GOOG"]
     assert list3["stocks"][1] == {"symbol": "AAPL", "name": ""}
+
+
+def test_favorite_order_updates_and_persists_per_list(api_client, db):
+    """指定リストの並び順を更新でき、別リストに影響しないこと。"""
+    _make_favorite("AAPL", list_name="リスト1")
+    _make_favorite("MSFT", list_name="リスト1")
+    _make_favorite("GOOG", list_name="リスト1")
+    _make_favorite("NVDA", list_name="リスト2")
+
+    list1 = StockList.objects.get(name="リスト1")
+    response = api_client.patch(
+        f"/api/favorites/{list1.id}/order/",
+        {"symbols": ["GOOG", "AAPL", "MSFT"]},
+        format="json",
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "list_id": list1.id,
+        "symbols": ["GOOG", "AAPL", "MSFT"],
+    }
+
+    refreshed = api_client.get("/api/favorites/")
+    groups = {item["name"]: item["stocks"] for item in refreshed.json()}
+    assert [stock["symbol"] for stock in groups["リスト1"]] == ["GOOG", "AAPL", "MSFT"]
+    assert [stock["symbol"] for stock in groups["リスト2"]] == ["NVDA"]
+
+
+@pytest.mark.parametrize(
+    "symbols",
+    [
+        ["AAPL", "AAPL"],
+        ["AAPL", "UNKNOWN"],
+        ["AAPL"],
+        "AAPL",
+    ],
+)
+def test_favorite_order_rejects_invalid_symbols(api_client, db, symbols):
+    """重複・不足・余分な銘柄を含む並び順更新は 400 を返すこと。"""
+    _make_favorite("AAPL", list_name="リスト1")
+    _make_favorite("MSFT", list_name="リスト1")
+    list1 = StockList.objects.get(name="リスト1")
+
+    response = api_client.patch(
+        f"/api/favorites/{list1.id}/order/",
+        {"symbols": symbols},
+        format="json",
+    )
+    assert response.status_code == 400
+
+
+def test_favorite_order_unknown_list_returns_404(api_client, db):
+    """存在しないリストの並び順更新は 404 を返すこと。"""
+    response = api_client.patch(
+        "/api/favorites/999/order/",
+        {"symbols": []},
+        format="json",
+    )
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------

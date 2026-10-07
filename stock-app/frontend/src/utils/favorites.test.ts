@@ -29,9 +29,11 @@ import {
   isStockInList,
   isValidListName,
   isValidSymbol,
+  moveStockInList,
   removeFavoriteStock,
   removeStockFromList,
   renameFavoriteList,
+  updateFavoriteOrder,
 } from './favorites';
 import type { FavoriteEntry, FavoriteGroup } from './favorites';
 
@@ -122,6 +124,24 @@ describe('removeStockFromList', () => {
   });
 });
 
+describe('moveStockInList', () => {
+  it('対象銘柄を一つ上または下へ移動し、他のリストと元データを変更しない', () => {
+    const movedUp = moveStockInList(GROUPS, 1, 'msft', 'up');
+    expect(movedUp[0]?.stocks.map((stock) => stock.symbol)).toEqual(['MSFT', 'AAPL']);
+    expect(movedUp[1]).toBe(GROUPS[1]);
+    expect(GROUPS[0].stocks.map((stock) => stock.symbol)).toEqual(['AAPL', 'MSFT']);
+
+    const movedDown = moveStockInList(movedUp, 1, 'MSFT', 'down');
+    expect(movedDown[0]?.stocks.map((stock) => stock.symbol)).toEqual(['AAPL', 'MSFT']);
+  });
+
+  it('先頭を上、末尾を下へ移動しようとした場合は変更しない', () => {
+    expect(moveStockInList(GROUPS, 1, 'AAPL', 'up')).toBe(GROUPS);
+    expect(moveStockInList(GROUPS, 1, 'MSFT', 'down')).toBe(GROUPS);
+    expect(moveStockInList(GROUPS, 999, 'AAPL', 'down')).toBe(GROUPS);
+  });
+});
+
 describe('favoriteErrorMessage', () => {
   it('ステータスコードに応じたメッセージを返す', () => {
     expect(favoriteErrorMessage(400, 'invalid symbol: X')).toBe(
@@ -196,5 +216,13 @@ describe('API ヘルパー', () => {
     deleteMock.mockResolvedValueOnce({ data: null });
     await removeFavoriteStock(2, ' aapl ');
     expect(deleteMock).toHaveBeenCalledWith('/api/favorites/2/AAPL/');
+  });
+
+  it('updateFavoriteOrder は正規化済み銘柄配列を PATCH する', async () => {
+    patchMock.mockResolvedValueOnce({ data: { list_id: 2, symbols: ['MSFT', 'AAPL'] } });
+    await updateFavoriteOrder(2, [' msft ', 'aapl']);
+    expect(patchMock).toHaveBeenCalledWith('/api/favorites/2/order/', {
+      symbols: ['MSFT', 'AAPL'],
+    });
   });
 });
