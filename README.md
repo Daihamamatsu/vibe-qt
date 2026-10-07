@@ -109,6 +109,40 @@ cd stock-app/backend
 python manage.py fetch_tickers_j
 ```
 
+#### 使用例
+
+以下のコマンドは PowerShell でも実行できるよう、すべて 1 行で記載しています。
+
+初回は、少数の銘柄で通信・DB 保存を確認します。
+
+```bash
+cd stock-app/backend
+python manage.py fetch_tickers_j --limit 5 --period 5d --sleep 0
+```
+
+日々の更新など、直近の株価だけを更新する場合は `--skip-info` を指定します。銘柄ごとの `Ticker.info` 取得、`StockMeta` 更新、お気に入り銘柄のメタ情報同期を省略し、`StockRecord` のみ更新します。
+
+```bash
+# ローカル実行
+cd stock-app/backend
+python manage.py fetch_tickers_j --period 5d --skip-info
+
+# Docker Compose 実行
+docker compose exec backend python manage.py fetch_tickers_j --period 5d --skip-info
+```
+
+全銘柄をバックグラウンドで更新する場合は、Docker Compose で次のように実行できます。
+
+```bash
+docker compose exec -d backend python manage.py fetch_tickers_j --period 5d --skip-info
+```
+
+メタ情報も更新したい場合は、`--skip-info` を付けずに実行します。初回登録や銘柄名・セクター情報の更新に使用します。
+
+```bash
+python manage.py fetch_tickers_j --period 1y
+```
+
 | オプション | 既定 | 説明 |
 |---|---|---|
 | `--csv` | `backend/data/data_j.csv` | 銘柄リスト CSV のパス |
@@ -116,8 +150,10 @@ python manage.py fetch_tickers_j
 | `--limit` | （なし） | 先頭 N 件の銘柄のみ処理（動作確認用: `--limit 5`） |
 | `--sleep` | `0.5` | バッチ間の待機秒数（Yahoo Finance のレート制限対策） |
 | `--batch-size` | `100` | `yf.download()` で一度に取得する銘柄数 |
+| `--skip-info` | 無効 | `Ticker.info` の取得と `StockMeta` 更新を省略し、株価だけ更新 |
 
 - 株価履歴は `yf.download()` で100銘柄ずつまとめて取得する。東証コードは Yahoo Finance のシンボルへ変換して取得（`1301` → `1301.T`）。`Ticker.info` 全体は銘柄ごとに取得して `StockMeta.info` に保存し、銘柄名・セクターもキャッシュする。銘柄名は CSV 側を最優先し、CSV名が空の場合は `Ticker.info` の日本語名・英語名へフォールバックする
+- 直近の株価だけを更新する場合は `python manage.py fetch_tickers_j --period 5d --skip-info` を使用する。この場合、`StockRecord` のみ更新し、`StockMeta` とお気に入り銘柄のメタ情報は更新しない
 - データのない銘柄（ETF・ETN に多い）と取得失敗はサマリに集計して処理を継続する。再実行は upsert のため安全（中断後の再開・差分更新に使える）
 - バッチ単位の処理により株価取得の通信回数を減らしているが、`Ticker.info` は成功銘柄ごとに取得する。全銘柄（4,441 件）はネットワーク状況により時間がかかるため、バックグラウンドでの実行を推奨（例: `docker compose exec -d backend python manage.py fetch_tickers_j`）
 

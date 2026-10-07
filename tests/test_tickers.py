@@ -300,6 +300,19 @@ def test_fetch_all_updates_on_rerun(db, fake_bulk_yfinance, tmp_path):
     assert (second['created'], second['updated']) == (0, 3)
     assert StockRecord.objects.count() == 3
 
+
+def test_fetch_all_skip_info_only_updates_prices(db, fake_bulk_yfinance, tmp_path):
+    """skip_info 指定時は株価だけ保存し、銘柄メタ情報を取得・更新しないこと。"""
+    csv_path = _write_ticker_csv(tmp_path / 'tickers.csv', [
+        ('1301', '極洋', 'プライム（内国株式）'),
+    ])
+    summary = fetch_all(csv_path=csv_path, period='5d', sleep=0, skip_info=True)
+
+    assert summary['ok'] == 1
+    assert StockRecord.objects.count() == 3
+    assert StockMeta.objects.count() == 0
+
+
 # --- fetch_tickers_j 管理コマンド --------------------------------------------
 
 
@@ -332,6 +345,24 @@ def test_fetch_tickers_j_command(db, fake_bulk_yfinance, tmp_path):
     assert any('ok=1' in line for line in out)
     assert any('no_data=1' in line for line in out)
     assert any('failed=1' in line for line in out)
+
+
+def test_fetch_tickers_j_command_skip_info(db, fake_bulk_yfinance, tmp_path):
+    """--skip-info 指定時は株価だけを登録すること。"""
+    csv_path = _write_ticker_csv(tmp_path / 'tickers.csv', [
+        ('1301', '極洋', 'プライム（内国株式）'),
+    ])
+
+    call_command(
+        'fetch_tickers_j',
+        csv=csv_path,
+        period='5d',
+        sleep=0,
+        skip_info=True,
+    )
+
+    assert StockRecord.objects.count() == 3
+    assert StockMeta.objects.count() == 0
 
 
 def test_fetch_tickers_j_command_invalid_period(db, fake_bulk_yfinance, tmp_path):
