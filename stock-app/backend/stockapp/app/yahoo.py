@@ -306,11 +306,20 @@ def fetch_and_save(symbol: str, period: str = '1mo') -> dict:
 
     既存の (symbol, date) レコードは更新、新規レコードは一括作成する。
     """
+    from .models import StockMeta
+
     rows = fetch_ohlcv(symbol, period)
     created, updated = save_ohlcv_rows(symbol, rows)
 
-    # 株価保存後に銘柄情報全体をキャッシュする（情報取得失敗は株価保存に影響させない）。
-    upsert_stock_meta(symbol, info=fetch_stock_info(symbol))
+    # 既存のCSV由来・手動設定の銘柄名は、GUIから再取得しても上書きしない。
+    # 既存名が空の場合だけTicker.infoから名前を補完する。
+    existing_meta = StockMeta.objects.filter(symbol=symbol).only('name').first()
+    existing_name = existing_meta.name if existing_meta else ''
+    upsert_stock_meta(
+        symbol,
+        name=existing_name,
+        info=fetch_stock_info(symbol),
+    )
 
     return {
         'symbol': symbol,

@@ -373,6 +373,29 @@ def test_fetch_and_save_caches_stock_info(db):
     assert StockRecord.objects.filter(symbol="AAPL").count() == 3
 
 
+def test_fetch_and_save_preserves_existing_stock_name(db):
+    """GUIから再取得しても既存のCSV由来銘柄名をTicker.infoで上書きしないこと。"""
+    StockMeta.objects.create(
+        symbol="AAPL",
+        name="アップル（CSV）",
+        sector="Technology",
+        info={"old": True},
+    )
+    info = {
+        "longName": "Apple Inc.",
+        "shortName": "Apple",
+        "sector": "Technology",
+        "marketCap": 123,
+    }
+
+    with _patch_yfinance(info):
+        fetch_and_save("AAPL", period="5d")
+
+    meta = StockMeta.objects.get(symbol="AAPL")
+    assert meta.name == "アップル（CSV）"
+    assert meta.info == info
+
+
 def test_fetch_and_save_name_failure_is_ignored(db):
     """銘柄名取得の失敗（例外・名称なし）が株価保存を妨げないこと（空名称で保存）。"""
     with _patch_yfinance(RuntimeError("Yahoo が利用できません")):
