@@ -13,7 +13,8 @@ from unittest import mock
 import pytest
 from rest_framework.test import APIClient
 
-from stockapp.app.models import StockMeta, StockRecord
+from stockapp.app.classic_turtle import rebuild_symbol_signals
+from stockapp.app.models import ClassicTurtleSignal, StockMeta, StockRecord
 from stockapp.app.yahoo import StockFetchError, fetch_and_save, select_stock_name
 
 
@@ -139,6 +140,107 @@ def test_stock_list_includes_ohlcv(api_client, stock_records):
     first = response.json()[0]
     for key in ("open", "high", "low", "volume"):
         assert key in first
+
+
+def _create_breakout_records(symbol="BREAK.T", base=None, volume=100_000_000):
+    """System 2 Longの固定テストデータを作成する。"""
+    base = base or datetime.date(2026, 1, 1)
+    rows = []
+    for index in range(55):
+        day = base + datetime.timedelta(days=index)
+        rows.append(StockRecord(
+            symbol=symbol,
+            date=day,
+            open="100.0",
+            high="100.0",
+            low="99.0",
+            close="99.5",
+            volume=volume,
+        ))
+    rows.append(StockRecord(
+        symbol=symbol,
+        date=base + datetime.timedelta(days=55),
+        open="101.0",
+        high="101.0",
+        low="100.0",
+        close="101.0",
+        volume=volume,
+    ))
+    StockRecord.objects.bulk_create(rows)
+    return base + datetime.timedelta(days=55)
+
+
+def test_classic_turtle_signal_search_filters_by_conditions(api_client, db):
+    """保存済みシグナルを期間・System・方向・売買代金で絞り込めること。"""
+    breakout_date = _create_breakout_records(volume=100_000_000)
+    StockMeta.objects.create(symbol="BREAK.T", name="ブレイクテスト", sector="テスト業種")
+    rebuild_symbol_signals("BREAK.T")
+    signal = ClassicTurtleSignal.objects.get(symbol="BREAK.T", date=breakout_date)
+    assert signal.system == "system1"
+    assert signal.side == "long"
+    assert signal.turnover == pytest.approx(10_100_000_000)
+
+    response = api_client.get(
+        "/api/classic-turtle/signals/",
+        {
+            "start_date": breakout_date.isoformat(),
+            "end_date": breakout_date.isoformat(),
+            "system": "system1",
+            "side": "long",
+            "turnover_min": "10000000000",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()[0]["symbol"] == "BREAK.T"
+    assert response.json()[0]["name"] == "ブレイクテスト"
+    assert response.json()[0]["sector"] == "テスト業種"
+    assert response.json()[0]["turnover"] == pytest.approx(10100000000)
+
+    response = api_client.get(
+        "/api/classic-turtle/signals/",
+        {
+            "start_date": breakout_date.isoformat(),
+            "end_date": breakout_date.isoformat(),
+            "side": "short",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {"end_date": "2026-02-25"},
+        {"start_date": "2026-02-26", "end_date": "2026-02-25"},
+        {"start_date": "2026-02-25", "end_date": "2026-02-25", "system": "invalid"},
+        {"start_date": "2026-02-25", "end_date": "2026-02-25", "turnover_min": "abc"},
+    ],
+)
+def test_classic_turtle_signal_search_validation(api_client, query):
+    """シグナル検索の必須値・列挙値・数値を検証すること。"""
+    response = api_client.get("/api/classic-turtle/signals/", query)
+    assert response.status_code == 400
+
+
+def test_classic_turtle_rebuild_endpoint_rebuilds_db_data(api_client, db):
+    """再計算APIが外部取得なしでDB内の株価データから再構築すること。"""
+    _create_breakout_records(symbol="REBUILD.T")
+
+    response = api_client.post("/api/classic-turtle/rebuild/")
+
+    assert response.status_code == 200
+    assert response.json()["symbols"] == 1
+    assert response.json()["signals"] >= 1
+    assert ClassicTurtleSignal.objects.filter(symbol="REBUILD.T").exists()
+
+
+def test_classic_turtle_rebuild_endpoint_allows_empty_database(api_client, db):
+    """株価データがない場合も再計算APIが正常終了すること。"""
+    response = api_client.post("/api/classic-turtle/rebuild/")
+
+    assert response.status_code == 200
+    assert response.json() == {"symbols": 0, "signals": 0}
 
 
 @pytest.mark.parametrize(

@@ -15,7 +15,7 @@ import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
 
-from stockapp.app.models import StockMeta, StockRecord
+from stockapp.app.models import ClassicTurtleSignal, StockMeta, StockRecord
 from stockapp.app.tickers import fetch_all, load_ticker_list, tse_to_yahoo_symbol
 from stockapp.app.yahoo import save_ohlcv_rows
 
@@ -363,6 +363,45 @@ def test_fetch_tickers_j_command_skip_info(db, fake_bulk_yfinance, tmp_path):
 
     assert StockRecord.objects.count() == 3
     assert StockMeta.objects.count() == 0
+
+
+def test_rebuild_classic_turtle_signals_command_uses_existing_db_data(db, tmp_path):
+    """再計算コマンドがYahoo取得なしでDB内データからシグナルを作成すること。"""
+    from stockapp.app.classic_turtle import rebuild_symbol_signals
+
+    base = datetime.date(2026, 1, 1)
+    records = [
+        StockRecord(
+            symbol='1301.T',
+            date=base + datetime.timedelta(days=index),
+            open='100.0', high='100.0', low='99.0', close='99.5', volume=100_000_000,
+        )
+        for index in range(55)
+    ]
+    records.append(StockRecord(
+        symbol='1301.T', date=base + datetime.timedelta(days=55),
+        open='101.0', high='101.0', low='100.0', close='101.0', volume=100_000_000,
+    ))
+    StockRecord.objects.bulk_create(records)
+
+    out = []
+
+    class _Collector:
+        def write(self, text):
+            out.append(text)
+
+    with mock.patch('stockapp.app.classic_turtle.rebuild_symbol_signals', wraps=rebuild_symbol_signals) as rebuild:
+        call_command('rebuild_classic_turtle_signals', symbol='1301.T', stdout=_Collector())
+
+    rebuild.assert_called_once_with('1301.T')
+    assert ClassicTurtleSignal.objects.filter(symbol='1301.T').exists()
+    assert any('signals=' in line for line in out)
+
+
+def test_rebuild_classic_turtle_signals_command_validates_limit(db):
+    """再計算コマンドのlimitが1以上であることを検証すること。"""
+    with pytest.raises(CommandError, match='limit'):
+        call_command('rebuild_classic_turtle_signals', limit=0)
 
 
 def test_fetch_tickers_j_command_invalid_period(db, fake_bulk_yfinance, tmp_path):

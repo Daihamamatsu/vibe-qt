@@ -20,6 +20,41 @@ class StockRecord(models.Model):
         ]
 
 
+class ClassicTurtleSignal(models.Model):
+    """古典タートルズのエントリーシグナルを保存する。"""
+
+    SYSTEM_CHOICES = (
+        ('system1', 'System 1'),
+        ('system2', 'System 2'),
+    )
+    SIDE_CHOICES = (
+        ('long', 'Long'),
+        ('short', 'Short'),
+    )
+
+    symbol = models.CharField(max_length=10)
+    date = models.DateField()
+    system = models.CharField(max_length=7, choices=SYSTEM_CHOICES)
+    side = models.CharField(max_length=5, choices=SIDE_CHOICES)
+    price = models.DecimalField(max_digits=12, decimal_places=4)
+    n = models.DecimalField(max_digits=12, decimal_places=4)
+    volume = models.BigIntegerField(null=True, blank=True)
+    turnover = models.DecimalField(max_digits=24, decimal_places=4, null=True, blank=True)
+    strategy_version = models.CharField(max_length=20, default='classic-v1')
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=('symbol', 'date', 'strategy_version'),
+                name='classicturtlesignal_symbol_date_version_uniq',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=('date', 'system', 'side'), name='classic_signal_filter_idx'),
+            models.Index(fields=('symbol', 'date'), name='classic_signal_symbol_date_idx'),
+        ]
+
+
 class StockMeta(models.Model):
     """銘柄メタ情報（銘柄名・セクター・Yahoo Finance 情報）。
 

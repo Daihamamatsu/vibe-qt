@@ -1,5 +1,12 @@
 <template>
   <div class="stock-container">
+    <div v-if="classicRebuildBusy" class="classic-rebuild-overlay" aria-live="polite" aria-busy="true">
+      <div class="classic-rebuild-dialog">
+        <div class="classic-rebuild-spinner" aria-hidden="true"></div>
+        <strong>古典タートルズを演算中です</strong>
+        <span>完了するまでしばらくお待ちください。</span>
+      </div>
+    </div>
     <!-- コントロールパネル -->
     <div class="control-panel" style="background:#f5f5f5;padding:1rem;border-radius:.5rem;margin-bottom:1.5rem;">
       <h3 style="margin-top:0;font-size:1.2rem;">
@@ -393,6 +400,66 @@
         <p v-else class="turtle-hint">表示可能な古典タートルズ取引はありません。</p>
       </template>
     </div>
+    <div class="classic-signal-search-panel">
+      <h4>古典タートルズ ブレイク銘柄抽出</h4>
+      <div class="classic-turtle-controls">
+        <label>開始日:
+          <input type="date" v-model="signalSearchStartDate" />
+        </label>
+        <label>終了日:
+          <input type="date" v-model="signalSearchEndDate" />
+        </label>
+        <label>System:
+          <select v-model="signalSearchSystem">
+            <option value="both">S1 + S2</option>
+            <option value="system1">S1</option>
+            <option value="system2">S2</option>
+          </select>
+        </label>
+        <label>方向:
+          <select v-model="signalSearchSide">
+            <option value="both">Long + Short</option>
+            <option value="long">Long</option>
+            <option value="short">Short</option>
+          </select>
+        </label>
+        <label>最低売買代金:
+          <input
+            type="text"
+            inputmode="numeric"
+            :value="formattedSignalSearchTurnoverMin"
+            @input="onSignalSearchTurnoverInput"
+            placeholder="制限なし"
+            style="width:9rem;"
+          />
+        </label>
+        <button type="button" :disabled="signalSearchBusy" @click="searchClassicSignals">
+          {{ signalSearchBusy ? '検索中...' : '銘柄を抽出' }}
+        </button>
+        <button type="button" :disabled="classicRebuildBusy" @click="rebuildClassicSignals">
+          古典タートルズを演算
+        </button>
+      </div>
+      <p v-if="signalSearchMessage" class="turtle-hint">{{ signalSearchMessage }}</p>
+      <p v-if="classicRebuildMessage" class="turtle-hint">{{ classicRebuildMessage }}</p>
+      <table v-if="classicSignalResults.length > 0" class="turtle-table classic-signal-table">
+        <thead><tr><th>日付</th><th>銘柄</th><th>銘柄名</th><th>セクター</th><th>System</th><th>方向</th><th>ブレイク価格</th><th>N</th><th>売買代金</th></tr></thead>
+        <tbody>
+          <tr v-for="signal in classicSignalResults" :key="`${signal.symbol}-${signal.date}-${signal.system}-${signal.side}`">
+            <td>{{ signal.date }}</td>
+            <td><button type="button" class="signal-symbol-button" @click="selectSignalSymbol(signal.symbol)">{{ signal.symbol }}</button></td>
+            <td>{{ signal.name || '—' }}</td>
+            <td>{{ signal.sector || '—' }}</td>
+            <td>{{ signal.system === 'system1' ? 'S1' : 'S2' }}</td>
+            <td>{{ signal.side === 'long' ? 'Long' : 'Short' }}</td>
+            <td>{{ fmtPrice(signal.price) }}</td>
+            <td>{{ fmtPrice(signal.n) }}</td>
+            <td>{{ signal.turnover === null ? '—' : formatTurnover(signal.turnover) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else-if="signalSearchCompleted" class="turtle-hint">条件に一致するブレイク銘柄はありません。</p>
+    </div>
   </div>
 </template>
 
@@ -472,6 +539,19 @@ interface StockRecord {
   low: number | null;
   close: number;
   volume: number | null;
+}
+
+interface ClassicSignalResult {
+  symbol: string;
+  name: string;
+  sector: string;
+  date: string;
+  system: TurtleSystem;
+  side: 'long' | 'short';
+  price: number;
+  n: number;
+  volume: number | null;
+  turnover: number | null;
 }
 
 // 大きな数を K/M 単位でコンパクトに表示（例: 30000000 -> "30M"）。
@@ -774,6 +854,24 @@ const classicObvFilterEnabled = ref(true);
 const classicObvX = ref<number | string>(DEFAULT_CLASSIC_TURTLE_OBV_X);
 const classicObvY = ref<number | string>(DEFAULT_CLASSIC_TURTLE_OBV_Y);
 const classicObvZ = ref<number | string>(DEFAULT_CLASSIC_TURTLE_OBV_Z);
+const signalSearchStartDate = ref('');
+const signalSearchEndDate = ref('');
+const signalSearchSystem = ref<TurtleSystem | 'both'>('both');
+const signalSearchSide = ref<ClassicTradeSideFilter>('both');
+const signalSearchTurnoverMin = ref<number | string | null>(1_000_000_000);
+const signalSearchBusy = ref(false);
+const signalSearchCompleted = ref(false);
+const signalSearchMessage = ref('');
+const classicSignalResults = ref<ClassicSignalResult[]>([]);
+const classicRebuildBusy = ref(false);
+const classicRebuildMessage = ref('');
+
+const formattedSignalSearchTurnoverMin = computed(() => {
+  const value = signalSearchTurnoverMin.value;
+  if (value === null || value === '') return '';
+  const digits = String(value).replace(/[^0-9]/g, '');
+  return digits ? Number(digits).toLocaleString('ja-JP') : '';
+});
 
 const classicTurtleCurrency = computed(() => getClassicTurtleCurrency(symbol.value));
 const classicUsdJpyRateNumber = computed(() => {
@@ -908,6 +1006,80 @@ const classicTradePeriodLabel = computed(() => {
 function clearClassicTradePeriod(): void {
   classicTradeStartDate.value = '';
   classicTradeEndDate.value = '';
+}
+
+function formatTurnover(value: number): string {
+  if (value >= 100_000_000) return `${(value / 100_000_000).toFixed(1).replace(/\.0$/, '')}億円`;
+  if (value >= 10_000) return `${(value / 10_000).toFixed(1).replace(/\.0$/, '')}万円`;
+  return `${Math.round(value).toLocaleString()}円`;
+}
+
+async function searchClassicSignals(): Promise<void> {
+  if (!signalSearchStartDate.value || !signalSearchEndDate.value) {
+    signalSearchMessage.value = '開始日と終了日を指定してください。';
+    signalSearchCompleted.value = false;
+    return;
+  }
+  if (signalSearchStartDate.value > signalSearchEndDate.value) {
+    signalSearchMessage.value = '開始日は終了日以前にしてください。';
+    signalSearchCompleted.value = false;
+    return;
+  }
+  signalSearchBusy.value = true;
+  signalSearchMessage.value = '';
+  signalSearchCompleted.value = false;
+  try {
+    const turnover = signalSearchTurnoverMin.value;
+    const params: Record<string, string | number> = {
+      start_date: signalSearchStartDate.value,
+      end_date: signalSearchEndDate.value,
+      system: signalSearchSystem.value,
+      side: signalSearchSide.value,
+    };
+    if (turnover !== null && turnover !== '' && Number.isFinite(Number(turnover)) && Number(turnover) >= 0) {
+      params.turnover_min = Number(turnover);
+    }
+    const response = await axios.get('/api/classic-turtle/signals/', { params });
+    classicSignalResults.value = response.data as ClassicSignalResult[];
+    signalSearchMessage.value = `${classicSignalResults.value.length}件のシグナルを抽出しました。`;
+    signalSearchCompleted.value = true;
+  } catch (error) {
+    const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+    classicSignalResults.value = [];
+    signalSearchMessage.value = detail ?? 'ブレイク銘柄の抽出に失敗しました。';
+    signalSearchCompleted.value = false;
+  } finally {
+    signalSearchBusy.value = false;
+  }
+}
+
+function onSignalSearchTurnoverInput(event: Event): void {
+  const raw = (event.target as HTMLInputElement).value.replace(/[^0-9]/g, '');
+  signalSearchTurnoverMin.value = raw === '' ? null : Number(raw);
+}
+
+async function rebuildClassicSignals(): Promise<void> {
+  if (classicRebuildBusy.value) return;
+  classicRebuildBusy.value = true;
+  classicRebuildMessage.value = '';
+  try {
+    const response = await axios.post('/api/classic-turtle/rebuild/');
+    const result = response.data as { symbols: number; signals: number };
+    classicRebuildMessage.value = `演算が完了しました（${result.symbols}銘柄 / ${result.signals}シグナル）。`;
+    if (signalSearchStartDate.value && signalSearchEndDate.value) {
+      await searchClassicSignals();
+    }
+  } catch (error) {
+    const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+    classicRebuildMessage.value = detail ?? '古典タートルズの演算に失敗しました。';
+  } finally {
+    classicRebuildBusy.value = false;
+  }
+}
+
+function selectSignalSymbol(target: string): void {
+  symbol.value = target;
+  void fetchStockData();
 }
 const classicLatestPosition = computed(() => {
   for (let i = classicTurtle.value.days.length - 1; i >= 0; i--) {
@@ -2265,6 +2437,49 @@ onMounted(() => {
   border:1px solid #cbd5e1;
   border-radius:.3rem;
 }
+.classic-signal-search-panel {
+  margin-top:1rem;
+  background:#fffaf0;
+  padding:.6rem;
+  border:1px solid #e8c98b;
+  border-radius:.3rem;
+}
+.classic-rebuild-overlay {
+  position:fixed;
+  inset:0;
+  z-index:1000;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:rgba(15,23,42,.58);
+  cursor:wait;
+}
+.classic-rebuild-dialog {
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:.6rem;
+  min-width:18rem;
+  padding:1.5rem 2rem;
+  background:#fff;
+  border-radius:.5rem;
+  box-shadow:0 4px 20px rgba(0,0,0,.25);
+  color:#1e293b;
+}
+.classic-rebuild-spinner {
+  width:2rem;
+  height:2rem;
+  border:.25rem solid #dbeafe;
+  border-top-color:#2563eb;
+  border-radius:50%;
+  animation:classic-rebuild-spin .8s linear infinite;
+}
+@keyframes classic-rebuild-spin {
+  to { transform:rotate(360deg); }
+}
+.classic-signal-search-panel h4 { margin:.1rem 0 .6rem; }
+.classic-signal-table { background:#fff; }
+.signal-symbol-button { border:0; background:none; color:#2563eb; cursor:pointer; padding:0; }
 .classic-turtle-panel h4 { margin:.1rem 0 .6rem; }
 .classic-turtle-controls {
   display:flex;

@@ -10,6 +10,8 @@ from stockapp.app.views import (
     stock_list_all,
     stock_list_by_symbol,
     stock_meta,
+    classic_turtle_signals,
+    rebuild_classic_turtle_signals,
 )
 
 # ルート定義（順序が重要）:
@@ -20,6 +22,8 @@ from stockapp.app.views import (
 #   使わない。以前は router の {pk} がシンボル文字列を先取りして 500 を
 #   出していた（Issue #19）。
 urlpatterns = [
+    path('api/classic-turtle/signals/', classic_turtle_signals),
+    path('api/classic-turtle/rebuild/', rebuild_classic_turtle_signals),
     path('api/stocks/fetch/', stock_fetch),
     # meta ルートは <str:symbol> ルートより前に置く（"AAPL" の後続セグメントを
     # シンボル先取りで 404 にしないため）

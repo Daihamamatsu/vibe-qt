@@ -2,7 +2,8 @@ from django.db import transaction
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from .models import FavoriteStock, StockList, StockMeta, StockRecord
+from .models import ClassicTurtleSignal, FavoriteStock, StockList, StockMeta, StockRecord
+from .classic_turtle import STRATEGY_VERSION, rebuild_symbol_signals
 from .serializers import StockRecordSerializer
 from .yahoo import (
     SYMBOL_RE,
@@ -291,3 +292,70 @@ def moving_average(request, symbol):
         return Response(status=status.HTTP_404_NOT_FOUND)
     avg = sum(r.close for r in records) / len(records)
     return Response({'symbol': symbol, 'moving_average': float(avg)})
+
+
+@api_view(['GET'])
+def classic_turtle_signals(request):
+    """GET /api/classic-turtle/signals/ — 保存済みシグナルを条件検索する。"""
+    start = request.query_params.get('start_date')
+    end = request.query_params.get('end_date')
+    system = request.query_params.get('system', 'both')
+    side = request.query_params.get('side', 'both')
+    turnover_min = request.query_params.get('turnover_min')
+    if not start or not end or start > end:
+        return Response({'detail': 'start_date and end_date are required'}, status=status.HTTP_400_BAD_REQUEST)
+    if system not in ('both', 'system1', 'system2') or side not in ('both', 'long', 'short'):
+        return Response({'detail': 'invalid system or side'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        turnover_value = float(turnover_min) if turnover_min not in (None, '') else None
+    except (TypeError, ValueError):
+        return Response({'detail': 'turnover_min must be numeric'}, status=status.HTTP_400_BAD_REQUEST)
+    if turnover_value is not None and turnover_value < 0:
+        return Response({'detail': 'turnover_min must be non-negative'}, status=status.HTTP_400_BAD_REQUEST)
+
+    queryset = ClassicTurtleSignal.objects.filter(
+        date__gte=start, date__lte=end, strategy_version=STRATEGY_VERSION,
+    ).order_by('date', 'symbol', 'system', 'side')
+    if system != 'both':
+        queryset = queryset.filter(system=system)
+    if side != 'both':
+        queryset = queryset.filter(side=side)
+    if turnover_value is not None:
+        queryset = queryset.filter(turnover__gte=turnover_value)
+    signals = list(queryset)
+    meta_by_symbol = {
+        meta.symbol: meta
+        for meta in StockMeta.objects.filter(
+            symbol__in={signal.symbol for signal in signals},
+        )
+    }
+    return Response([
+        {
+            'symbol': row.symbol,
+            'name': meta_by_symbol.get(row.symbol).name if meta_by_symbol.get(row.symbol) else '',
+            'sector': meta_by_symbol.get(row.symbol).sector if meta_by_symbol.get(row.symbol) else '',
+            'date': row.date,
+            'system': row.system,
+            'side': row.side,
+            'price': row.price,
+            'n': row.n,
+            'volume': row.volume,
+            'turnover': row.turnover,
+        }
+        for row in queryset
+    ])
+
+
+@api_view(['POST'])
+def rebuild_classic_turtle_signals(request):
+    """POST /api/classic-turtle/rebuild/ — DB内データだけで全銘柄を再計算する。"""
+    symbols = list(
+        StockRecord.objects.values_list('symbol', flat=True)
+        .distinct()
+        .order_by('symbol')
+    )
+    total_signals = sum(rebuild_symbol_signals(symbol) for symbol in symbols)
+    return Response({
+        'symbols': len(symbols),
+        'signals': total_signals,
+    })
