@@ -14,7 +14,7 @@ import pytest
 from rest_framework.test import APIClient
 
 from stockapp.app.models import StockMeta, StockRecord
-from stockapp.app.yahoo import StockFetchError, fetch_and_save
+from stockapp.app.yahoo import StockFetchError, fetch_and_save, select_stock_name
 
 
 @pytest.fixture
@@ -226,43 +226,48 @@ def test_stock_meta_returns_cached_name(api_client, db):
     """DB に StockMeta 行があれば名称をそのまま返し、Yahoo は呼ばないこと。"""
     StockMeta.objects.create(symbol="AAPL", name="Apple Inc.")
     with mock.patch(
-        "stockapp.app.views.fetch_stock_name",
+        "stockapp.app.views.fetch_stock_info",
         side_effect=AssertionError("DB に行があれば呼ばれるべきではない"),
     ):
         response = api_client.get("/api/stocks/AAPL/meta/")
     assert response.status_code == 200
-    assert response.json() == {"symbol": "AAPL", "name": "Apple Inc."}
+    assert response.json() == {"symbol": "AAPL", "name": "Apple Inc.", "sector": "", "info": {}}
 
 
 def test_stock_meta_fetches_from_yahoo_when_missing(api_client, db):
     """StockMeta 行がなければ Yahoo から取得して DB 保存の上で返すこと。"""
     with mock.patch(
-        "stockapp.app.views.fetch_stock_name",
-        return_value="Apple Inc.",
-    ) as fetch_name:
+        "stockapp.app.views.fetch_stock_info",
+        return_value={"shortName": "Apple Inc.", "sector": "Technology"},
+    ) as fetch_info:
         response = api_client.get("/api/stocks/AAPL/meta/")
     assert response.status_code == 200
-    assert response.json() == {"symbol": "AAPL", "name": "Apple Inc."}
-    fetch_name.assert_called_once_with("AAPL")
-    assert StockMeta.objects.filter(symbol="AAPL", name="Apple Inc.").exists()
+    assert response.json() == {
+        "symbol": "AAPL",
+        "name": "Apple Inc.",
+        "sector": "Technology",
+        "info": {"shortName": "Apple Inc.", "sector": "Technology"},
+    }
+    fetch_info.assert_called_once_with("AAPL")
+    assert StockMeta.objects.filter(symbol="AAPL", name="Apple Inc.", sector="Technology").exists()
 
 
 def test_stock_meta_negative_cache_returns_empty_name(api_client, db):
     """空名称の行（負のキャッシュ）があれば Yahoo を再取得しないこと。"""
     StockMeta.objects.create(symbol="AAPL", name="")
     with mock.patch(
-        "stockapp.app.views.fetch_stock_name",
+        "stockapp.app.views.fetch_stock_info",
         side_effect=AssertionError("DB に行があれば呼ばれるべきではない"),
     ):
         response = api_client.get("/api/stocks/AAPL/meta/")
     assert response.status_code == 200
-    assert response.json() == {"symbol": "AAPL", "name": ""}
+    assert response.json() == {"symbol": "AAPL", "name": "", "sector": "", "info": {}}
 
 
 def test_stock_meta_invalid_symbol_400(api_client, db):
     """無効なシンボル（10 文字超など）は 400 を返し、Yahoo を呼ばないこと。"""
     with mock.patch(
-        "stockapp.app.views.fetch_stock_name",
+        "stockapp.app.views.fetch_stock_info",
         side_effect=AssertionError("無効シンボルで呼ばれるべきではない"),
     ):
         response = api_client.get("/api/stocks/" + "A" * 11 + "/meta/")
@@ -356,11 +361,15 @@ def _patch_yfinance(name_info):
     return mock.patch.dict(sys.modules, {"yfinance": fake})
 
 
-def test_fetch_and_save_caches_stock_name(db):
-    """fetch_and_save は株価と同時に銘柄名を StockMeta に保存すること。"""
-    with _patch_yfinance({"shortName": "Apple Inc."}):
+def test_fetch_and_save_caches_stock_info(db):
+    """fetch_and_save は株価と同時に Ticker.info 全体を StockMeta に保存すること。"""
+    info = {"shortName": "Apple Inc.", "sector": "Technology", "marketCap": 123}
+    with _patch_yfinance(info):
         fetch_and_save("AAPL", period="5d")
-    assert StockMeta.objects.get(symbol="AAPL").name == "Apple Inc."
+    meta = StockMeta.objects.get(symbol="AAPL")
+    assert meta.name == "Apple Inc."
+    assert meta.sector == "Technology"
+    assert meta.info == info
     assert StockRecord.objects.filter(symbol="AAPL").count() == 3
 
 
@@ -371,5 +380,22 @@ def test_fetch_and_save_name_failure_is_ignored(db):
     assert summary["fetched"] == 3
     assert StockRecord.objects.filter(symbol="AAPL").count() == 3
     assert StockMeta.objects.get(symbol="AAPL").name == ""
+
+
+def test_select_stock_name_prefers_japanese_name():
+    """Ticker.info 内に日本語名があれば英語名より優先すること。"""
+    assert select_stock_name({
+        "longName": "Toyota Motor Corporation",
+        "shortName": "Toyota",
+        "displayName": "トヨタ自動車",
+    }) == "トヨタ自動車"
+
+
+def test_select_stock_name_falls_back_to_english_name():
+    """日本語名がなければ英語の longName / shortName にフォールバックすること。"""
+    assert select_stock_name({
+        "longName": "Apple Inc.",
+        "shortName": "Apple",
+    }) == "Apple Inc."
 
 

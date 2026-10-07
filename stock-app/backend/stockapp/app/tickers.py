@@ -13,7 +13,13 @@ import csv
 import time
 from pathlib import Path
 
-from .yahoo import StockFetchError, fetch_ohlcv, save_ohlcv_rows, upsert_stock_meta
+from .yahoo import (
+    StockFetchError,
+    fetch_ohlcv_batch,
+    fetch_stock_info,
+    save_ohlcv_rows,
+    upsert_stock_meta,
+)
 
 # 銘柄リスト CSV の既定パス（backend/data/data_j.csv）
 DEFAULT_CSV_PATH = Path(__file__).resolve().parents[2] / 'data' / 'data_j.csv'
@@ -23,6 +29,7 @@ COL_DATE = 0
 COL_CODE = 1
 COL_NAME = 2
 COL_MARKET = 3
+BATCH_SIZE = 100
 
 
 def tse_to_yahoo_symbol(code: str) -> str:
@@ -55,21 +62,24 @@ def load_ticker_list(csv_path) -> list:
 
 
 def fetch_all(csv_path=None, period: str = '1y', limit: int = None,
-              sleep: float = 0.5, progress_cb=None) -> dict:
+              sleep: float = 0.5, progress_cb=None,
+              batch_size: int = BATCH_SIZE) -> dict:
     """銘柄リスト CSV の全銘柄について日足株価を一括取得して DB に保存する。
 
-    - 各銘柄の東証コードを Yahoo シンボル（.T 付き）に変換し、`period` 期間の日足を取得
+    - 東証コードを Yahoo シンボル（.T 付き）へ変換し、複数銘柄単位で日足を取得
     - StockRecord に upsert。銘柄名は CSV 側のを StockMeta に保存する
       （Yahoo の `.info` 銘柄名取得をスキップ → 1 銘柄あたり HTTP 1 往復を削減）
     - データのない銘柄（LookupError、ETF・ETN に多い）と取得失敗
       （StockFetchError、通信エラー等）は集計して次の銘柄へ継続する
-    - 銘柄間の `sleep` 秒の待機で Yahoo Finance のレート制限を回避する
+    - バッチ間の `sleep` 秒の待機で Yahoo Finance のレート制限を回避する
 
     戻り値はサマリ dict:
         total / ok / no_data / failed / created / updated / errors
     """
     if csv_path is None:
         csv_path = DEFAULT_CSV_PATH
+    if batch_size < 1:
+        raise ValueError('batch_size は1以上で指定してください')
     tickers = load_ticker_list(csv_path)
     if limit is not None:
         tickers = tickers[:limit]
@@ -84,26 +94,43 @@ def fetch_all(csv_path=None, period: str = '1y', limit: int = None,
         'errors': [],
     }
     total = len(tickers)
-    for i, ticker in enumerate(tickers, start=1):
-        symbol = tse_to_yahoo_symbol(ticker['code'])
+    for batch_start in range(0, total, batch_size):
+        batch = tickers[batch_start:batch_start + batch_size]
+        symbols = [tse_to_yahoo_symbol(ticker['code']) for ticker in batch]
         try:
-            rows = fetch_ohlcv(symbol, period)
-        except LookupError:
-            summary['no_data'] += 1
-            summary['errors'].append(
-                {'code': ticker['code'], 'symbol': symbol, 'reason': '株価データなし'})
+            rows_by_symbol, errors_by_symbol = fetch_ohlcv_batch(symbols, period)
         except StockFetchError as exc:
-            summary['failed'] += 1
-            summary['errors'].append(
-                {'code': ticker['code'], 'symbol': symbol, 'reason': str(exc)})
-        else:
-            created, updated = save_ohlcv_rows(symbol, rows)
-            upsert_stock_meta(symbol, ticker['name'])
-            summary['ok'] += 1
-            summary['created'] += created
-            summary['updated'] += updated
-        if progress_cb is not None:
-            progress_cb(i, total, ticker, summary)
-        if sleep and i < total:
+            rows_by_symbol = {}
+            errors_by_symbol = {symbol: exc for symbol in symbols}
+
+        for offset, ticker in enumerate(batch):
+            i = batch_start + offset + 1
+            symbol = symbols[offset]
+            error = errors_by_symbol.get(symbol)
+            rows = rows_by_symbol.get(symbol)
+            if error is not None:
+                summary['failed'] += 1
+                summary['errors'].append(
+                    {'code': ticker['code'], 'symbol': symbol, 'reason': str(error)})
+            elif not rows:
+                summary['no_data'] += 1
+                summary['errors'].append(
+                    {'code': ticker['code'], 'symbol': symbol, 'reason': '株価データなし'})
+            else:
+                try:
+                    created, updated = save_ohlcv_rows(symbol, rows)
+                except StockFetchError as exc:
+                    summary['failed'] += 1
+                    summary['errors'].append(
+                        {'code': ticker['code'], 'symbol': symbol, 'reason': str(exc)})
+                else:
+                    # 一括取得でも info 全体を保存する。info 取得失敗時は CSV 名を残す。
+                    upsert_stock_meta(symbol, name=ticker['name'], info=fetch_stock_info(symbol))
+                    summary['ok'] += 1
+                    summary['created'] += created
+                    summary['updated'] += updated
+            if progress_cb is not None:
+                progress_cb(i, total, ticker, summary)
+        if sleep and batch_start + batch_size < total:
             time.sleep(sleep)
     return summary

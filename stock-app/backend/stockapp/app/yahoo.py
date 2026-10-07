@@ -4,7 +4,8 @@
 アプリ起動時に ImportError とならないよう、関数内で遅延 import する。
 """
 import re
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 # 取得エンドポイントで指定可能な期間（yfinance の period 値）
 VALID_PERIODS = {'5d', '1mo', '3mo', '6mo', '1y', '2y', '5y'}
@@ -12,14 +13,35 @@ VALID_PERIODS = {'5d', '1mo', '3mo', '6mo', '1y', '2y', '5y'}
 # 記号の許容文字（英大文字・数字・ドット・ハイフン・ハット・イコール、最大 10 文字 = モデルの max_length）
 SYMBOL_RE = re.compile(r'^[A-Z0-9.\-^=]{1,10}$')
 
+# StockRecord の DecimalField(max_digits=12, decimal_places=4) に保存できる株価の上限。
+# 整数部 8 桁・小数部 4 桁のため、絶対値は 99,999,999.9999 まで。
+MAX_STOCK_PRICE = Decimal('99999999.9999')
+
 
 class StockFetchError(Exception):
     """Yahoo Finance からデータを取得できなかった（通信エラー等）ときに送出される。"""
 
 
 def _to_decimal(value) -> Decimal:
-    """株価をモデルの桁数（小数 4 桁）に丸める。"""
-    return Decimal(str(value)).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+    """株価をモデルの桁数（小数 4 桁）に丸める。
+
+    Yahoo Finance の異常値や DB の桁数を超える値は、保存時の
+    ``decimal.InvalidOperation`` で一括取得全体を停止させないため、
+    StockFetchError として扱う。
+    """
+    try:
+        price = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise StockFetchError(f'株価が数値として解釈できません: {value!r}') from exc
+    if not price.is_finite() or price < 0 or price > MAX_STOCK_PRICE:
+        raise StockFetchError(
+            f'DB の桁数範囲外の株価です: {value!r} '
+            f'(0〜{MAX_STOCK_PRICE})'
+        )
+    try:
+        return price.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+    except InvalidOperation as exc:
+        raise StockFetchError(f'株価の丸めに失敗しました: {value!r}') from exc
 
 
 def _to_volume(value):
@@ -72,37 +94,169 @@ def fetch_ohlcv(symbol: str, period: str = '1mo') -> list:
     return rows
 
 
-def fetch_stock_name(symbol: str) -> str:
-    """Yahoo Finance から銘柄の正式名称（会社名）を取得する。
+def fetch_ohlcv_batch(symbols: list[str], period: str = '1mo') -> tuple[dict, dict]:
+    """Yahoo Finance から複数銘柄の日足 OHLCV をまとめて取得する。
 
-    yfinance の Ticker.info を用い、shortName / longName を返す。
-    通信失敗・未知シンボルなどは空文字を返す（例外は送出しない）—
-    銘柄名は補完データのため、失敗しても株価取得の本体処理には影響させない (Issue #49)。
+    ``yf.download`` の戻り値は通常、銘柄名と項目名の MultiIndex になる。
+    ただし1銘柄だけの場合は通常の項目名になるため、両方の形式を扱う。
+
+    戻り値は ``(rows_by_symbol, errors_by_symbol)``。データが存在しない銘柄は
+    errors に含めず、呼び出し側で ``no_data`` として集計する。
     """
+    if not symbols:
+        return {}, {}
+
     try:
-        import yfinance as yf  # 遅延 import（モジュール docstring 参照）
+        import yfinance as yf  # 遅延 import
+        df = yf.download(
+            symbols,
+            period=period,
+            interval='1d',
+            auto_adjust=False,
+            group_by='ticker',
+            threads=True,
+            progress=False,
+        )
+    except Exception as exc:
+        raise StockFetchError(f'Yahoo Finance の一括取得に失敗しました: {exc}') from exc
+
+    if df is None or df.empty:
+        return {}, {}
+
+    rows_by_symbol = {}
+    errors_by_symbol = {}
+    columns = getattr(df, 'columns', None)
+    is_multi_index = bool(columns is not None and getattr(columns, 'nlevels', 1) > 1)
+
+    for symbol in symbols:
+        try:
+            if is_multi_index:
+                # group_by='ticker' の通常形式（ticker, field）を優先し、
+                # yfinanceの返却形式が逆でも銘柄名の階層を検出して対応する。
+                level_values = [set(level) for level in columns.levels]
+                if symbol in level_values[0]:
+                    symbol_df = df[symbol]
+                elif symbol in level_values[1]:
+                    symbol_df = df.xs(symbol, axis=1, level=1)
+                else:
+                    continue
+            else:
+                if len(symbols) != 1:
+                    continue
+                symbol_df = df
+
+            if symbol_df is None or symbol_df.empty:
+                continue
+            required = ['Open', 'High', 'Low', 'Close']
+            if any(field not in symbol_df.columns for field in required):
+                continue
+            symbol_df = symbol_df.dropna(subset=required)
+            if symbol_df.empty:
+                continue
+
+            index = symbol_df.index
+            if index.tz is not None:
+                index = index.tz_localize(None)
+            rows = []
+            for ts, row in zip(index, symbol_df.itertuples(index=False)):
+                rows.append((
+                    ts.date(),
+                    _to_decimal(row.Open),
+                    _to_decimal(row.High),
+                    _to_decimal(row.Low),
+                    _to_decimal(row.Close),
+                    _to_volume(row.Volume),
+                ))
+            rows_by_symbol[symbol] = rows
+        except StockFetchError as exc:
+            errors_by_symbol[symbol] = exc
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            errors_by_symbol[symbol] = StockFetchError(
+                f'株価データの変換に失敗しました: {exc}'
+            )
+    return rows_by_symbol, errors_by_symbol
+
+
+def _contains_japanese(value: str) -> bool:
+    """文字列に日本語の文字が含まれるか判定する。"""
+    return bool(re.search(r'[ぁ-んァ-ヶ一-龯々]', value))
+
+
+def _to_json_value(value):
+    """Ticker.info を JSONField に保存できる値へ再帰的に変換する。"""
+    if isinstance(value, dict):
+        return {str(key): _to_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_json_value(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def select_stock_name(info: dict, fallback: str = '') -> str:
+    """Ticker.info から日本語名を優先して表示名を選ぶ。"""
+    candidates = [
+        info.get('longNameJa'),
+        info.get('shortNameJa'),
+        info.get('displayNameJa'),
+        info.get('longName'),
+        info.get('shortName'),
+        info.get('displayName'),
+        info.get('name'),
+    ]
+    values = [str(value).strip() for value in candidates if value]
+    japanese = next((value for value in values if _contains_japanese(value)), None)
+    return japanese or (values[0] if values else str(fallback).strip())
+
+
+def select_stock_sector(info: dict) -> str:
+    """Ticker.info から表示用のセクター名を選ぶ。"""
+    return str(info.get('sectorDisp') or info.get('sector') or '').strip()
+
+
+def fetch_stock_info(symbol: str) -> dict:
+    """Yahoo Finance の Ticker.info 全体を取得する（失敗時は空辞書）。"""
+    try:
+        import yfinance as yf  # 遅延 import
         info = yf.Ticker(symbol).info
     except Exception:
-        # 通信エラーに加え、yfinance 未導入環境（ModuleNotFoundError 等）でも空文字を返す
-        return ''
+        return {}
     if not isinstance(info, dict):
-        return ''
-    name = info.get('shortName') or info.get('longName') or ''
-    return str(name).strip()
+        return {}
+    return _to_json_value(info)
 
 
-def upsert_stock_meta(symbol: str, name: str) -> None:
-    """銘柄名を StockMeta に保存し、お気に入り銘柄へも同期する (Issue #49, #50)。
+def fetch_stock_name(symbol: str) -> str:
+    """Yahoo Finance から日本語名を優先した銘柄名を取得する。"""
+    return select_stock_name(fetch_stock_info(symbol))
 
-    StockMeta の行は無いなら作成・あれば name を更新し、同じシンボルの
-    FavoriteStock 行の name も常に StockMeta 側に合わせる（空文字の場合も
-    含めて全面同期）。これによりお気に入りパネルは常に最新の銘柄名を
-    表示できる。
+
+def upsert_stock_meta(symbol: str, name: str = '', info: dict | None = None,
+                      sector: str | None = None) -> None:
+    """銘柄メタ情報を保存し、お気に入り銘柄へ同期する。
+
+    name が指定されている場合は、表示名として最優先する。東証銘柄CSVの
+    日本語名を Yahoo Finance の英語名より優先するために使用する。
     """
     from .models import FavoriteStock, StockMeta
 
-    StockMeta.objects.update_or_create(symbol=symbol, defaults={'name': name})
-    FavoriteStock.objects.filter(symbol=symbol).update(name=name)
+    normalized_info = _to_json_value(info) if isinstance(info, dict) else {}
+    selected_name = str(name).strip() or select_stock_name(normalized_info)
+    selected_sector = sector if sector is not None else select_stock_sector(normalized_info)
+    StockMeta.objects.update_or_create(
+        symbol=symbol,
+        defaults={
+            'name': selected_name,
+            'sector': selected_sector,
+            'info': normalized_info,
+        },
+    )
+    FavoriteStock.objects.filter(symbol=symbol).update(
+        name=selected_name,
+        sector=selected_sector,
+    )
 
 
 def save_ohlcv_rows(symbol: str, rows: list) -> tuple:
@@ -123,6 +277,11 @@ def save_ohlcv_rows(symbol: str, rows: list) -> tuple:
     to_create = []
     updated = 0
     for date_, open_, high_, low_, close_, volume_ in rows:
+        # 呼び出し元が直接渡した行も、Yahoo取得経由の行と同じ範囲検証を行う。
+        open_ = _to_decimal(open_)
+        high_ = _to_decimal(high_)
+        low_ = _to_decimal(low_)
+        close_ = _to_decimal(close_)
         record = existing.get(date_)
         if record is None:
             to_create.append(StockRecord(
@@ -150,9 +309,8 @@ def fetch_and_save(symbol: str, period: str = '1mo') -> dict:
     rows = fetch_ohlcv(symbol, period)
     created, updated = save_ohlcv_rows(symbol, rows)
 
-    # 銘柄名を取得してキャッシュ（best effort: 銘柄名取得の失敗が株価保存を妨げない）(Issue #49, #50)
-    # upsert_stock_meta によりお気に入り銘柄の name も StockMeta と同期される
-    upsert_stock_meta(symbol, fetch_stock_name(symbol))
+    # 株価保存後に銘柄情報全体をキャッシュする（情報取得失敗は株価保存に影響させない）。
+    upsert_stock_meta(symbol, info=fetch_stock_info(symbol))
 
     return {
         'symbol': symbol,

@@ -21,7 +21,7 @@ class StockRecord(models.Model):
 
 
 class StockMeta(models.Model):
-    """銘柄メタ情報（銘柄名など）。
+    """銘柄メタ情報（銘柄名・セクター・Yahoo Finance 情報）。
 
     Yahoo Finance の株価データには銘柄名が含まれないため、Ticker.info から
     別途取得してこのテーブルにキャッシュする（Issue #49）。
@@ -29,6 +29,8 @@ class StockMeta(models.Model):
 
     symbol = models.CharField(max_length=10, unique=True)
     name = models.CharField(max_length=200, blank=True, default='')
+    sector = models.CharField(max_length=200, blank=True, default='')
+    info = models.JSONField(default=dict, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
 
@@ -48,13 +50,14 @@ class FavoriteStock(models.Model):
     """お気に入り銘柄の所属（Issue #50）。
 
     1 行 = 1 個のリストへの銘柄所属。同じシンボルは複数リストに所属できる。
-    銘柄名は StockMeta と同期する（yahoo.upsert_stock_meta が
-    StockMeta 更新時に同じくこの行の name を更新する）。
+    銘柄名・セクターは StockMeta と同期する（yahoo.upsert_stock_meta が
+    StockMeta 更新時に同じくこの行を更新する）。
     """
 
     list = models.ForeignKey(StockList, on_delete=models.CASCADE, related_name='favorites')
     symbol = models.CharField(max_length=10)
     name = models.CharField(max_length=200, blank=True, default='')
+    sector = models.CharField(max_length=200, blank=True, default='')
     order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 

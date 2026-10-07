@@ -114,11 +114,12 @@ python manage.py fetch_tickers_j
 | `--csv` | `backend/data/data_j.csv` | 銘柄リスト CSV のパス |
 | `--period` | `1y` | 取得期間（5d / 1mo / 3mo / 6mo / 1y / 2y / 5y） |
 | `--limit` | （なし） | 先頭 N 件の銘柄のみ処理（動作確認用: `--limit 5`） |
-| `--sleep` | `0.5` | 銘柄間の待機秒数（Yahoo Finance のレート制限対策） |
+| `--sleep` | `0.5` | バッチ間の待機秒数（Yahoo Finance のレート制限対策） |
+| `--batch-size` | `100` | `yf.download()` で一度に取得する銘柄数 |
 
-- 東証コードは Yahoo Finance のシンボルへ変換して取得（`1301` → `1301.T`）。銘柄名は CSV 側を `StockMeta` に保存する
+- 株価履歴は `yf.download()` で100銘柄ずつまとめて取得する。東証コードは Yahoo Finance のシンボルへ変換して取得（`1301` → `1301.T`）。`Ticker.info` 全体は銘柄ごとに取得して `StockMeta.info` に保存し、銘柄名・セクターもキャッシュする。銘柄名は CSV 側を最優先し、CSV名が空の場合は `Ticker.info` の日本語名・英語名へフォールバックする
 - データのない銘柄（ETF・ETN に多い）と取得失敗はサマリに集計して処理を継続する。再実行は upsert のため安全（中断後の再開・差分更新に使える）
-- 全銘柄（4,441 件）の実行はネットワーク状況で 1〜3 時間程度かかるため、バックグラウンドでの実行を推奨（例: `docker compose exec -d backend python manage.py fetch_tickers_j`）
+- バッチ単位の処理により株価取得の通信回数を減らしているが、`Ticker.info` は成功銘柄ごとに取得する。全銘柄（4,441 件）はネットワーク状況により時間がかかるため、バックグラウンドでの実行を推奨（例: `docker compose exec -d backend python manage.py fetch_tickers_j`）
 
 ## API リファレンス
 
@@ -311,7 +312,7 @@ docker compose -f stock-app/docker-compose.yml exec db sqlite3 /data/db/stock.db
 - 東証「上場銘柄一覧」（2026 年 8 月末時点 4,441 銘柄: プライム 1,556 / スタンダード 1,555 / グロース 596 / PRO Market 187 / ETF・ETN 477 / REIT 等 63 / 外国株式 5 / 出資証券 2）を CSV 化して同梱（`stock-app/backend/data/data_j.csv`、UTF-8・ヘッダあり・全 10 列）。元データ（xlsx）はプロジェクト外に保持し CSV のみコミット
 - 新規管理コマンド `fetch_tickers_j`（`app/management/commands/fetch_tickers_j.py` + サービス `app/tickers.py`）:
   - 銘柄リスト CSV を読み、東証 4 桁コードを Yahoo シンボルへ変換（`1301` → `1301.T`）して日足 OHLCV を一括取得し `StockRecord` に upsert
-  - 銘柄名は CSV 側のを `StockMeta` に保存（Yahoo `.info` 参照をスキップ → 1 銘柄あたり HTTP 往復を削減）
+  - `Ticker.info` 全体を `StockMeta.info` に保存。銘柄名はCSV側の日本語名を最優先し、CSV名がない場合は `Ticker.info` の日本語名を優先して、セクターとともに `StockMeta` / `FavoriteStock` へ同期
   - データなし（ETF・ETN に多い）/ 取得失敗はサマリに集計して継続。銘柄間は `--sleep` 秒（既定 0.5）待機でレート制限対策。オプション: `--csv` / `--period`（既定 1y）/ `--limit` / `--sleep`
   - upsert 意味論のため再実行安全（中断後の再開・差分更新に使える）。全 4,441 銘柄の実行は 1〜3 時間程度の見込み
 - リファクタ: `yahoo.fetch_and_save` の DB upsert 部分を `save_ohlcv_rows()` として切り出し一括取得と共有（挙動不変、既存テストで回帰なしを確認）

@@ -38,8 +38,8 @@ import {
 import type { FavoriteEntry, FavoriteGroup } from './favorites';
 
 const STOCKS: FavoriteEntry[] = [
-  { symbol: 'AAPL', name: 'Apple Inc.' },
-  { symbol: 'MSFT', name: 'Microsoft Corporation' },
+    { symbol: 'AAPL', name: 'Apple Inc.', sector: 'Technology' },
+    { symbol: 'MSFT', name: 'Microsoft Corporation', sector: 'Technology' },
 ];
 
 const GROUPS: FavoriteGroup[] = [
@@ -99,7 +99,7 @@ describe('addStockToList', () => {
     const next = addStockToList(GROUPS, 2, 'goog', 'Alphabet Inc.');
     expect(next).toHaveLength(2);
     expect(next[0]).toBe(GROUPS[0]); // 他リストは同一参照のまま
-    expect(next[1]?.stocks).toEqual([{ symbol: 'GOOG', name: 'Alphabet Inc.' }]);
+    expect(next[1]?.stocks).toEqual([{ symbol: 'GOOG', name: 'Alphabet Inc.', sector: '' }]);
     expect(GROUPS[1].stocks).toHaveLength(0);
   });
 

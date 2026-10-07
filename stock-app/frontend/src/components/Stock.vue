@@ -2,7 +2,12 @@
   <div class="stock-container">
     <!-- コントロールパネル -->
     <div class="control-panel" style="background:#f5f5f5;padding:1rem;border-radius:.5rem;margin-bottom:1.5rem;">
-      <h3 style="margin-top:0;font-size:1.2rem;">株価データ</h3>
+      <h3 style="margin-top:0;font-size:1.2rem;">
+        株価データ
+        <span v-if="stockName || stockSector" style="margin-left:.75rem;color:#555;font-size:1rem;font-weight:normal;">
+          {{ stockName }}<template v-if="stockName && stockSector"> / </template>{{ stockSector }}
+        </span>
+      </h3>
       <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;">
         <label>シンボル:</label>
         <input v-model="symbol" placeholder="例：AAPL" />
@@ -86,6 +91,7 @@
               @click="moveFavorite(f.symbol, 'down')"
             >↓</button>
             <span v-if="f.name" style="margin-left:.5rem;color:#555;">{{ f.name }}</span>
+            <span v-if="f.sector" style="margin-left:.5rem;color:#777;font-size:.9rem;">（{{ f.sector }}）</span>
             <button :disabled="favoriteBusy" style="margin-left:.5rem;" title="このリストから削除" @click="removeFavorite(f.symbol)">✕</button>
           </li>
           <li v-if="(activeGroup?.stocks.length ?? 0) === 0" style="color:#888;">このリストには銘柄がありません</li>
@@ -479,6 +485,7 @@ function formatCompact(value: number): string {
 const symbol = ref('AAPL');
 // 銘柄名（Yahoo Finance、Issue #49）: 株価データ表示付近に示す
 const stockName = ref('');
+const stockSector = ref('');
 // Yahoo Finance 取得期間（yfinance の period 値）
 const period = ref('1mo');
 // シンボル入力の銘柄名取得デバウンス (Issue #49)
@@ -1911,6 +1918,7 @@ async function fetchStockMeta() {
   const target = symbol.value.trim().toUpperCase();
   if (!SYMBOL_PATTERN.test(target)) {
     stockName.value = '';
+    stockSector.value = '';
     return;
   }
   try {
@@ -1918,9 +1926,13 @@ async function fetchStockMeta() {
     // 応答到着までにシンボルが変更された場合は古い結果を捨てる（古い名称を保持しない）
     if (symbol.value.trim().toUpperCase() !== target) return;
     stockName.value = res.data.name ?? '';
+    stockSector.value = res.data.sector ?? '';
   } catch (e) {
     console.error('銘柄名取得エラー:', e);
-    if (symbol.value.trim().toUpperCase() === target) stockName.value = '';
+    if (symbol.value.trim().toUpperCase() === target) {
+      stockName.value = '';
+      stockSector.value = '';
+    }
   }
 }
 

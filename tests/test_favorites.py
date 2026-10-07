@@ -203,8 +203,8 @@ def test_favorites_grouped_includes_empty_lists(api_client, db):
     assert len(data) == 10  # 空リストも含めた全リスト
     list1 = next(item for item in data if item["name"] == "リスト1")
     assert list1["stocks"] == [
-        {"symbol": "AAPL", "name": "Apple Inc."},
-        {"symbol": "MSFT", "name": "Microsoft Corporation"},
+        {"symbol": "AAPL", "name": "Apple Inc.", "sector": ""},
+        {"symbol": "MSFT", "name": "Microsoft Corporation", "sector": ""},
     ]
     list2 = next(item for item in data if item["name"] == "リスト2")
     assert list2["stocks"] == []
@@ -219,7 +219,7 @@ def test_favorites_stocks_ordered_by_saved_order(api_client, db):
     response = api_client.get("/api/favorites/")
     list3 = next(item for item in response.json() if item["name"] == "リスト3")
     assert [s["symbol"] for s in list3["stocks"]] == ["MSFT", "AAPL", "GOOG"]
-    assert list3["stocks"][1] == {"symbol": "AAPL", "name": ""}
+    assert list3["stocks"][1] == {"symbol": "AAPL", "name": "", "sector": ""}
 
 
 def test_favorite_order_updates_and_persists_per_list(api_client, db):
@@ -293,10 +293,24 @@ def test_favorite_add_success(api_client, db):
         "/api/favorites/", {"symbol": "aapl", "list_id": list1.id}, format="json"
     )
     assert response.status_code == 201
-    assert response.json() == {"symbol": "AAPL", "name": "Apple Inc.", "list_id": list1.id}
+    assert response.json() == {"symbol": "AAPL", "name": "Apple Inc.", "sector": "", "list_id": list1.id}
     favorite = FavoriteStock.objects.get(symbol="AAPL")
     assert favorite.list_id == list1.id
     assert favorite.name == "Apple Inc."
+
+
+def test_favorite_add_inherits_sector_from_stock_meta(api_client, db):
+    """お気に入り追加時に StockMeta のセクターも引き継ぐこと。"""
+    StockMeta.objects.create(symbol="AAPL", name="Apple Inc.", sector="Technology")
+    list1 = StockList.objects.get(name="リスト1")
+
+    response = api_client.post(
+        "/api/favorites/", {"symbol": "AAPL", "list_id": list1.id}, format="json"
+    )
+
+    assert response.status_code == 201
+    assert response.json()["sector"] == "Technology"
+    assert FavoriteStock.objects.get(symbol="AAPL").sector == "Technology"
 
 
 def test_favorite_add_without_stock_meta_has_empty_name(api_client, db):
@@ -306,7 +320,7 @@ def test_favorite_add_without_stock_meta_has_empty_name(api_client, db):
         "/api/favorites/", {"symbol": "NVDA", "list_id": list1.id}, format="json"
     )
     assert response.status_code == 201
-    assert response.json() == {"symbol": "NVDA", "name": "", "list_id": list1.id}
+    assert response.json() == {"symbol": "NVDA", "name": "", "sector": "", "list_id": list1.id}
 
 
 def test_favorite_add_invalid_symbol(api_client, db):
@@ -412,21 +426,22 @@ def test_favorite_delete_keeps_other_lists(api_client, db):
 def test_upsert_stock_meta_syncs_favorite_name(db):
     """upsert_stock_meta は同名シンボルの FavoriteStock.name を同期すること。"""
     _make_favorite("AAPL", name="")
-    upsert_stock_meta("AAPL", "Apple Inc.")
+    upsert_stock_meta("AAPL", name="Apple Inc.", sector="Technology")
     assert FavoriteStock.objects.get(symbol="AAPL").name == "Apple Inc."
+    assert FavoriteStock.objects.get(symbol="AAPL").sector == "Technology"
 
 
 def test_upsert_stock_meta_syncs_empty_name(db):
     """StockMeta 側が空文字（負のキャッシュ）でも FavoriteStock 側に同期すること。"""
     _make_favorite("AAPL", name="Apple Inc.")
-    upsert_stock_meta("AAPL", "")
+    upsert_stock_meta("AAPL", name="", sector="")
     assert FavoriteStock.objects.get(symbol="AAPL").name == ""
 
 
 def test_stock_meta_endpoint_syncs_favorite_name(api_client, db):
     """GET /api/stocks/<symbol>/meta/ 経由でもお気に入り銘柄名が同期されること。"""
     _make_favorite("AAPL", name="")
-    with mock.patch("stockapp.app.views.fetch_stock_name", return_value="Apple Inc."):
+    with mock.patch("stockapp.app.views.fetch_stock_info", return_value={"shortName": "Apple Inc."}):
         response = api_client.get("/api/stocks/AAPL/meta/")
     assert response.status_code == 200
     assert FavoriteStock.objects.get(symbol="AAPL").name == "Apple Inc."
@@ -435,7 +450,8 @@ def test_stock_meta_endpoint_syncs_favorite_name(api_client, db):
 def test_fetch_and_save_syncs_favorite_name(db):
     """fetch_and_save（Yahoo 取得フロー）でもお気に入り銘柄名が同期されること。"""
     _make_favorite("AAPL", name="")
-    with _patch_yfinance({"shortName": "Apple Inc."}):
+    with _patch_yfinance({"shortName": "Apple Inc.", "sector": "Technology"}):
         fetch_and_save("AAPL", period="5d")
     assert FavoriteStock.objects.get(symbol="AAPL").name == "Apple Inc."
+    assert FavoriteStock.objects.get(symbol="AAPL").sector == "Technology"
     assert StockMeta.objects.get(symbol="AAPL").name == "Apple Inc."
