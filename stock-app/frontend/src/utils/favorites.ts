@@ -9,6 +9,7 @@ import axios from 'axios';
 export interface FavoriteEntry {
   symbol: string;
   name: string;
+  sector?: string;
 }
 
 /** お気に入りリストグループ（バックエンド GET /api/favorites/ 応答の要素、空リストも含まれる）。 */
@@ -58,13 +59,14 @@ export function addStockToList(
   listId: number,
   symbol: string,
   name = '',
+  sector = '',
 ): readonly FavoriteGroup[] {
   const target = symbol.trim().toUpperCase();
   let changed = false;
   const next = groups.map((g) => {
     if (g.id !== listId || isStockInList(g.stocks, target)) return g;
     changed = true;
-    return { ...g, stocks: [...g.stocks, { symbol: target, name }] };
+    return { ...g, stocks: [...g.stocks, { symbol: target, name, sector }] };
   });
   return changed ? next : groups;
 }

@@ -5,7 +5,13 @@ import sys
 import pytest
 
 from stockapp.app.models import StockRecord
-from stockapp.app.yahoo import StockFetchError, fetch_and_save, fetch_ohlcv, save_ohlcv_rows
+from stockapp.app.yahoo import (
+    StockFetchError,
+    fetch_and_save,
+    fetch_ohlcv,
+    fetch_ohlcv_batch,
+    save_ohlcv_rows,
+)
 
 
 def test_fetch_ohlcv_import_failure_raises_stock_fetch_error(monkeypatch):
@@ -14,6 +20,54 @@ def test_fetch_ohlcv_import_failure_raises_stock_fetch_error(monkeypatch):
     monkeypatch.setitem(sys.modules, 'yfinance', None)
     with pytest.raises(StockFetchError):
         fetch_ohlcv('AAPL')
+
+
+def test_save_ohlcv_rows_rejects_price_outside_decimal_field_range(db):
+    """DBのDecimalField範囲を超える株価を保存しないこと。"""
+    with pytest.raises(StockFetchError, match='桁数範囲外'):
+        save_ohlcv_rows('AAPL', [
+            (datetime.date(2026, 9, 15), 100000000, 100000000, 99999999, 100000000, 1000),
+        ])
+
+
+def test_fetch_ohlcv_batch_converts_multi_index_download_result(monkeypatch):
+    """yf.download の銘柄・項目MultiIndexを銘柄別の行へ変換すること。"""
+    import pandas as pd
+
+    symbols = ['1301.T', '130A.T']
+    columns = pd.MultiIndex.from_product([symbols, ['Open', 'High', 'Low', 'Close', 'Volume']])
+    frame = pd.DataFrame(
+        [[100, 110, 90, 105, 1000, 200, 210, 190, 205, 2000]],
+        index=pd.DatetimeIndex(['2026-09-09']),
+        columns=columns,
+    )
+    fake_yfinance = type('FakeYFinance', (), {'download': staticmethod(lambda *args, **kwargs: frame)})
+    monkeypatch.setitem(sys.modules, 'yfinance', fake_yfinance)
+
+    rows_by_symbol, errors_by_symbol = fetch_ohlcv_batch(symbols, period='1y')
+
+    assert not errors_by_symbol
+    assert rows_by_symbol['1301.T'][0][:5] == (
+        datetime.date(2026, 9, 9), 100, 110, 90, 105,
+    )
+    assert rows_by_symbol['130A.T'][0][5] == 2000
+
+
+def test_fetch_ohlcv_batch_supports_single_symbol_columns(monkeypatch):
+    """単一銘柄時の通常カラム形式も変換できること。"""
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        {'Open': [100], 'High': [110], 'Low': [90], 'Close': [105], 'Volume': [1000]},
+        index=pd.DatetimeIndex(['2026-09-09']),
+    )
+    fake_yfinance = type('FakeYFinance', (), {'download': staticmethod(lambda *args, **kwargs: frame)})
+    monkeypatch.setitem(sys.modules, 'yfinance', fake_yfinance)
+
+    rows_by_symbol, errors_by_symbol = fetch_ohlcv_batch(['1301.T'], period='1y')
+
+    assert not errors_by_symbol
+    assert len(rows_by_symbol['1301.T']) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +102,7 @@ def test_save_ohlcv_rows_updates_existing_intraday_row(db):
 def test_fetch_and_save_updates_intraday_row_after_close(db, monkeypatch):
     """引け後の fetch_and_save が同日行を最終値へ更新し、翌日分のみ新規作成すること。
 
-    fetch_ohlcv / fetch_stock_name を monkeypatch してネットワークに依存しない。
+    fetch_ohlcv / fetch_stock_info を monkeypatch してネットワークに依存しない。
     同日は update（1 件）、翌日以降は create（1 件）になること。
     """
     day = datetime.date(2026, 9, 15)
@@ -66,7 +120,7 @@ def test_fetch_and_save_updates_intraday_row_after_close(db, monkeypatch):
     monkeypatch.setattr(
         'stockapp.app.yahoo.fetch_ohlcv', lambda symbol, period='1mo': rows)
     monkeypatch.setattr(
-        'stockapp.app.yahoo.fetch_stock_name', lambda symbol: '')
+        'stockapp.app.yahoo.fetch_stock_info', lambda symbol: {})
 
     summary = fetch_and_save('8306.T', period='5d')
 

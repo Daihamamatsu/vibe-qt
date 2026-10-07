@@ -1,7 +1,7 @@
 """東証上場銘柄全銘柄の株価を一括登録する管理コマンド（Issue #65）。
 
 使い方:
-    python manage.py fetch_tickers_j [--csv PATH] [--period 1y] [--limit N] [--sleep 秒]
+    python manage.py fetch_tickers_j [--csv PATH] [--period 1y] [--limit N] [--sleep 秒] [--batch-size N]
 
 銘柄リスト CSV（既定: backend/data/data_j.csv）を読み、各銘柄を
 Yahoo Finance（yfinance）から日足取得して StockRecord に upsert する。
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 
-from stockapp.app.tickers import DEFAULT_CSV_PATH, fetch_all
+from stockapp.app.tickers import BATCH_SIZE, DEFAULT_CSV_PATH, fetch_all
 from stockapp.app.yahoo import VALID_PERIODS
 
 # 進捗表示の間隔（銘柄数）
@@ -33,13 +33,18 @@ class Command(BaseCommand):
             help='先頭 N 件の銘柄のみ処理する（動作確認用）')
         parser.add_argument(
             '--sleep', type=float, default=0.5,
-            help='銘柄間の待機秒数（Yahoo Finance のレート制限対策。既定: %(default)s）')
+            help='バッチ間の待機秒数（Yahoo Finance のレート制限対策。既定: %(default)s）')
+        parser.add_argument(
+            '--batch-size', type=int, default=BATCH_SIZE,
+            help='yf.download で一度に取得する銘柄数（既定: %(default)s）')
 
     def handle(self, *args, **options):
         csv_path = Path(options['csv'])
         period = options['period']
         if period not in VALID_PERIODS:
             raise CommandError(f'無効な取得期間です: {period}')
+        if options['batch_size'] < 1:
+            raise CommandError('--batch-size は1以上で指定してください')
         if not csv_path.exists():
             raise CommandError(f'銘柄リスト CSV が見つかりません: {csv_path}')
 
@@ -55,6 +60,7 @@ class Command(BaseCommand):
             period=period,
             limit=options['limit'],
             sleep=options['sleep'],
+            batch_size=options['batch_size'],
             progress_cb=progress,
         )
         self.stdout.write(self.style.SUCCESS(

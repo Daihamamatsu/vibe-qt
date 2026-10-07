@@ -9,7 +9,7 @@ from .yahoo import (
     VALID_PERIODS,
     StockFetchError,
     fetch_and_save,
-    fetch_stock_name,
+    fetch_stock_info,
     upsert_stock_meta,
 )
 
@@ -58,10 +58,15 @@ def stock_meta(request, symbol):
     meta = StockMeta.objects.filter(symbol=symbol).first()
     if meta is None:
         # 初回取得時は Yahoo Finance から取得（best effort）して DB 保存する。
-        # upsert_stock_meta はお気に入り銘柄の name も同期する (Issue #50)
-        upsert_stock_meta(symbol, fetch_stock_name(symbol))
+        # upsert_stock_meta はお気に入り銘柄のメタ情報も同期する。
+        upsert_stock_meta(symbol, info=fetch_stock_info(symbol))
         meta = StockMeta.objects.get(symbol=symbol)
-    return Response({'symbol': symbol, 'name': meta.name})
+    return Response({
+        'symbol': symbol,
+        'name': meta.name,
+        'sector': meta.sector,
+        'info': meta.info,
+    })
 
 
 @api_view(['GET', 'POST'])
@@ -170,15 +175,22 @@ def favorites(request):
                 {'detail': f'favorite exists: {symbol}'},
                 status=status.HTTP_409_CONFLICT,
             )
-        # 銘柄名は StockMeta と同期 (Issue #50)。未キャッシュなら空文字で保存し、
-        # 後日の株価取得 (fetch_and_save) で StockMeta 更新時に自動反映される
+        # 銘柄名・セクターは StockMeta と同期する。未キャッシュなら空文字で保存し、
+        # 後日の株価取得で StockMeta 更新時に自動反映される。
         meta = StockMeta.objects.filter(symbol=symbol).first()
         name = meta.name if meta is not None else ''
+        sector = meta.sector if meta is not None else ''
         last_favorite = FavoriteStock.objects.filter(list=stock_list).order_by('-order', '-id').first()
         next_order = last_favorite.order + 1 if last_favorite is not None else 0
-        FavoriteStock.objects.create(list=stock_list, symbol=symbol, name=name, order=next_order)
+        FavoriteStock.objects.create(
+            list=stock_list,
+            symbol=symbol,
+            name=name,
+            sector=sector,
+            order=next_order,
+        )
         return Response(
-            {'symbol': symbol, 'name': name, 'list_id': list_id},
+            {'symbol': symbol, 'name': name, 'sector': sector, 'list_id': list_id},
             status=status.HTTP_201_CREATED,
         )
 
@@ -191,7 +203,7 @@ def favorites(request):
     for f in favorites_qs:
         item = grouped.get(f.list_id)
         if item is not None:
-            item['stocks'].append({'symbol': f.symbol, 'name': f.name})
+            item['stocks'].append({'symbol': f.symbol, 'name': f.name, 'sector': f.sector})
     return Response(list(grouped.values()))
 
 
