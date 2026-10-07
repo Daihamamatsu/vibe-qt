@@ -154,6 +154,7 @@ python manage.py fetch_tickers_j --period 1y
 
 - 株価履歴は `yf.download()` で100銘柄ずつまとめて取得する。東証コードは Yahoo Finance のシンボルへ変換して取得（`1301` → `1301.T`）。`Ticker.info` 全体は銘柄ごとに取得して `StockMeta.info` に保存し、銘柄名・セクターもキャッシュする。銘柄名は CSV 側を最優先し、CSV名が空の場合は `Ticker.info` の日本語名・英語名へフォールバックする
 - 直近の株価だけを更新する場合は `python manage.py fetch_tickers_j --period 5d --skip-info` を使用する。この場合、`StockRecord` のみ更新し、`StockMeta` とお気に入り銘柄のメタ情報は更新しない
+- `fetch_tickers_j` は株価データの取得・保存だけを行い、古典タートルズの演算は行わない。既存の株価データから演算する場合は `python manage.py rebuild_classic_turtle_signals` を別途実行する
 - データのない銘柄（ETF・ETN に多い）と取得失敗はサマリに集計して処理を継続する。再実行は upsert のため安全（中断後の再開・差分更新に使える）
 - バッチ単位の処理により株価取得の通信回数を減らしているが、`Ticker.info` は成功銘柄ごとに取得する。全銘柄（4,441 件）はネットワーク状況により時間がかかるため、バックグラウンドでの実行を推奨（例: `docker compose exec -d backend python manage.py fetch_tickers_j`）
 
@@ -165,6 +166,8 @@ python manage.py fetch_tickers_j --period 1y
 | GET | `/api/stocks/<symbol>/` | 指定シンボルの株価（日付降順） |
 | GET | `/api/moving_average/<symbol>/?days=N` | 直近 N 日（既定 5）の終値移動平均。`days` は正の整数（非整数・1 未満は 400）。データなしなら 404 |
 | POST | `/api/stocks/fetch/` | Yahoo Finance（yfinance）から日足 OHLC を取得して DB に保存（upsert）。Body: `{"symbol": "AAPL", "period": "1mo"}`（period: 5d / 1mo / 3mo / 6mo / 1y / 2y / 5y）。データなし 404、Yahoo 通信エラー 502 |
+| GET | `/api/classic-turtle/signals/` | DBに保存した古典タートルズの実際のエントリーシグナルを期間・System・方向・最低売買代金で抽出 |
+| POST | `/api/classic-turtle/rebuild/` | Yahoo Financeへ接続せず、DB内の株価データから全銘柄の古典タートルズシグナルを再構築（最大120秒） |
 
 レスポンスの例:
 
@@ -177,6 +180,27 @@ python manage.py fetch_tickers_j --period 1y
 // GET /api/moving_average/AAPL/?days=3
 {"symbol": "AAPL", "moving_average": 153.33333333333334}
 ```
+
+古典タートルズのシグナル抽出では、`start_date` と `end_date` が必須です。`system` は `both` / `system1` / `system2`、`side` は `both` / `long` / `short` を指定できます。`turnover_min` を指定すると、日足の **終値 × 出来高** がその金額以上のシグナルだけを返します。
+
+```text
+GET /api/classic-turtle/signals/?start_date=2026-01-01&end_date=2026-01-31&system=system1&side=long&turnover_min=1000000000
+```
+
+古典タートルズの再計算は株価取得とは独立しています。株価の取得処理は `StockRecord` の保存だけを行い、以下の管理コマンドでDB内の既存データからシグナルを再構築します。Yahoo Financeへの接続は発生しません。
+
+```bash
+# DB内に存在する全銘柄を再計算
+python manage.py rebuild_classic_turtle_signals
+
+# 特定銘柄だけ再計算
+python manage.py rebuild_classic_turtle_signals --symbol 1301.T
+
+# 動作確認用に先頭5銘柄だけ再計算
+python manage.py rebuild_classic_turtle_signals --limit 5
+```
+
+判定に必要な過去データが不足する銘柄はシグナルを保存しません。株価取得後に必要なタイミングでこのコマンドを実行してください。
 
 ## テスト
 

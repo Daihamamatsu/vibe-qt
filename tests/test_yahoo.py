@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from stockapp.app.models import StockRecord
+from stockapp.app.models import ClassicTurtleSignal, StockRecord
 from stockapp.app.yahoo import (
     StockFetchError,
     fetch_and_save,
@@ -131,4 +131,5 @@ def test_fetch_and_save_updates_intraday_row_after_close(db, monkeypatch):
     assert intraday.close == pytest.approx(3668.0)
     assert intraday.volume == 41635100
     assert StockRecord.objects.get(symbol='8306.T', date=next_day).close == pytest.approx(3655.0)
+    assert not ClassicTurtleSignal.objects.filter(symbol='8306.T').exists()
 
