@@ -167,7 +167,7 @@ python manage.py fetch_tickers_j --period 1y
 | GET | `/api/moving_average/<symbol>/?days=N` | 直近 N 日（既定 5）の終値移動平均。`days` は正の整数（非整数・1 未満は 400）。データなしなら 404 |
 | POST | `/api/stocks/fetch/` | Yahoo Finance（yfinance）から日足 OHLC を取得して DB に保存（upsert）。Body: `{"symbol": "AAPL", "period": "1mo"}`（period: 5d / 1mo / 3mo / 6mo / 1y / 2y / 5y）。データなし 404、Yahoo 通信エラー 502 |
 | GET | `/api/classic-turtle/signals/` | DBに保存した古典タートルズの実際のエントリーシグナルを期間・System・方向・最低売買代金で抽出 |
-| POST | `/api/classic-turtle/rebuild/` | Yahoo Financeへ接続せず、DB内の株価データから全銘柄の古典タートルズシグナルを再構築 |
+| POST | `/api/classic-turtle/rebuild/` | Yahoo Financeへ接続せず、DB内の株価データから全銘柄の古典タートルズシグナルを再構築（最大120秒） |
 
 レスポンスの例:
 
