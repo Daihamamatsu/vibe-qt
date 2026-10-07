@@ -1,7 +1,7 @@
 """東証上場銘柄全銘柄の株価を一括登録する管理コマンド（Issue #65）。
 
 使い方:
-    python manage.py fetch_tickers_j [--csv PATH] [--period 1y] [--limit N] [--sleep 秒] [--batch-size N]
+    python manage.py fetch_tickers_j [--csv PATH] [--period 1y] [--limit N] [--sleep 秒] [--batch-size N] [--skip-info]
 
 銘柄リスト CSV（既定: backend/data/data_j.csv）を読み、各銘柄を
 Yahoo Finance（yfinance）から日足取得して StockRecord に upsert する。
@@ -37,6 +37,9 @@ class Command(BaseCommand):
         parser.add_argument(
             '--batch-size', type=int, default=BATCH_SIZE,
             help='yf.download で一度に取得する銘柄数（既定: %(default)s）')
+        parser.add_argument(
+            '--skip-info', action='store_true',
+            help='Ticker.info の取得・StockMeta の更新を省略する（株価のみ更新）')
 
     def handle(self, *args, **options):
         csv_path = Path(options['csv'])
@@ -61,6 +64,7 @@ class Command(BaseCommand):
             limit=options['limit'],
             sleep=options['sleep'],
             batch_size=options['batch_size'],
+            skip_info=options['skip_info'],
             progress_cb=progress,
         )
         self.stdout.write(self.style.SUCCESS(

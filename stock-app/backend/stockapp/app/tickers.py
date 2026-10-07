@@ -63,12 +63,14 @@ def load_ticker_list(csv_path) -> list:
 
 def fetch_all(csv_path=None, period: str = '1y', limit: int = None,
               sleep: float = 0.5, progress_cb=None,
-              batch_size: int = BATCH_SIZE) -> dict:
+              batch_size: int = BATCH_SIZE, skip_info: bool = False) -> dict:
     """銘柄リスト CSV の全銘柄について日足株価を一括取得して DB に保存する。
 
     - 東証コードを Yahoo シンボル（.T 付き）へ変換し、複数銘柄単位で日足を取得
-    - StockRecord に upsert。銘柄名は CSV 側のを StockMeta に保存する
-      （Yahoo の `.info` 銘柄名取得をスキップ → 1 銘柄あたり HTTP 1 往復を削減）
+    - StockRecord に upsert。通常は CSV 側の銘柄名と Yahoo の `.info` を
+      StockMeta に保存する
+    - skip_info=True の場合は Ticker.info の取得と StockMeta の更新を省略し、
+      株価だけを更新する
     - データのない銘柄（LookupError、ETF・ETN に多い）と取得失敗
       （StockFetchError、通信エラー等）は集計して次の銘柄へ継続する
     - バッチ間の `sleep` 秒の待機で Yahoo Finance のレート制限を回避する
@@ -124,8 +126,9 @@ def fetch_all(csv_path=None, period: str = '1y', limit: int = None,
                     summary['errors'].append(
                         {'code': ticker['code'], 'symbol': symbol, 'reason': str(exc)})
                 else:
-                    # 一括取得でも info 全体を保存する。info 取得失敗時は CSV 名を残す。
-                    upsert_stock_meta(symbol, name=ticker['name'], info=fetch_stock_info(symbol))
+                    if not skip_info:
+                        # 一括取得でも info 全体を保存する。info 取得失敗時は CSV 名を残す。
+                        upsert_stock_meta(symbol, name=ticker['name'], info=fetch_stock_info(symbol))
                     summary['ok'] += 1
                     summary['created'] += created
                     summary['updated'] += updated
