@@ -126,6 +126,6 @@ def test_fetch_tickers_us_command_uses_saved_csv_without_api_call(tmp_path):
     with mock.patch('stockapp.app.management.commands.fetch_tickers_us.fetch_listing_csv') as fetch_listing, \
             mock.patch('stockapp.app.us_tickers.fetch_ohlcv_batch', return_value=({'AAPL': rows, 'MSFT': rows}, {})), \
             mock.patch('stockapp.app.us_tickers.fetch_stock_info', return_value={}):
-        call_command('fetch_tickers_us', csv=str(csv_path), limit=2, sleep=0)
+        call_command('fetch_tickers_us', csv=str(csv_path), limit=2, sleep=0, period='1d')
     fetch_listing.assert_not_called()
     assert StockMeta.objects.filter(symbol='AAPL').exists()

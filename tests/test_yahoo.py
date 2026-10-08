@@ -146,6 +146,27 @@ def test_fetch_ohlcv_batch_supports_single_symbol_columns(monkeypatch):
     assert len(rows_by_symbol['1301.T']) == 1
 
 
+def test_fetch_ohlcv_batch_passes_one_day_period_to_yfinance(monkeypatch):
+    """1d指定をyfinanceへそのまま渡すこと。"""
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        {'Open': [100], 'High': [110], 'Low': [90], 'Close': [105], 'Volume': [1000]},
+        index=pd.DatetimeIndex(['2026-09-09']),
+    )
+    calls = []
+
+    def recording_download(*args, **kwargs):
+        calls.append(kwargs)
+        return frame
+
+    fake_yfinance = type('FakeYFinance', (), {'download': staticmethod(recording_download)})
+    monkeypatch.setitem(sys.modules, 'yfinance', fake_yfinance)
+
+    fetch_ohlcv_batch(['AAPL'], period='1d')
+    assert calls[0]['period'] == '1d'
+
+
 # ---------------------------------------------------------------------------
 # 同日（イントレーダ）レコードの upsert: 引け後最終値の上書き
 # ---------------------------------------------------------------------------
