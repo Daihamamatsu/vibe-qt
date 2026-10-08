@@ -1,11 +1,13 @@
 """stockapp/app/yahoo.py のユニットテスト (Issue #50)"""
 import datetime
+import logging
 import sys
 
 import pytest
 
 from stockapp.app.models import ClassicTurtleSignal, StockRecord
 from stockapp.app.yahoo import (
+    RateLimitError,
     StockFetchError,
     fetch_and_save,
     fetch_ohlcv,
@@ -20,6 +22,80 @@ def test_fetch_ohlcv_import_failure_raises_stock_fetch_error(monkeypatch):
     monkeypatch.setitem(sys.modules, 'yfinance', None)
     with pytest.raises(StockFetchError):
         fetch_ohlcv('AAPL')
+
+
+def test_fetch_ohlcv_raises_rate_limit_error_for_429(monkeypatch):
+    """yfinanceの429は通常の取得失敗と区別して送出すること。"""
+    fake_yfinance = type(
+        'FakeYFinance',
+        (),
+        {'Ticker': staticmethod(lambda symbol: type(
+            'FakeTicker', (), {
+                'history': lambda self, **kwargs: (_ for _ in ()).throw(
+                    RuntimeError('429 Too Many Requests')),
+            })(),
+        )},
+    )
+    monkeypatch.setitem(sys.modules, 'yfinance', fake_yfinance)
+
+    with pytest.raises(RateLimitError, match='429'):
+        fetch_ohlcv('AAPL')
+
+
+def test_fetch_ohlcv_batch_raises_rate_limit_error_for_429(monkeypatch):
+    """yf.downloadの429は銘柄別エラーへ変換せず即時送出すること。"""
+    fake_yfinance = type(
+        'FakeYFinance',
+        (),
+        {'download': staticmethod(lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError('429 Too Many Requests')))},
+    )
+    monkeypatch.setitem(sys.modules, 'yfinance', fake_yfinance)
+
+    with pytest.raises(RateLimitError, match='429'):
+        fetch_ohlcv_batch(['AAPL', 'MSFT'])
+
+
+def test_fetch_ohlcv_batch_raises_rate_limit_error_for_yfinance_log(monkeypatch):
+    """yfinanceが429をログ出力して正常復帰しても専用例外を送出すること。"""
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        {'Open': [100], 'High': [110], 'Low': [90], 'Close': [105], 'Volume': [1000]},
+        index=pd.DatetimeIndex(['2026-09-09']),
+    )
+
+    def download(*args, **kwargs):
+        logging.getLogger('yfinance').warning(
+            'Crumb fetch rate-limited (HTTP 429), continuing without crumb')
+        return frame
+
+    fake_yfinance = type('FakeYFinance', (), {'download': staticmethod(download)})
+    monkeypatch.setitem(sys.modules, 'yfinance', fake_yfinance)
+
+    with pytest.raises(RateLimitError, match='レート制限'):
+        fetch_ohlcv_batch(['AAPL'])
+
+
+def test_fetch_stock_info_raises_rate_limit_error_for_429(monkeypatch):
+    """Ticker.infoの429を空辞書へ変換せず即時送出すること。"""
+    class YFRateLimitError(Exception):
+        pass
+
+    class FakeTicker:
+        @property
+        def info(self):
+            raise YFRateLimitError('Too Many Requests')
+
+    fake_yfinance = type('FakeYFinance', (), {
+        'Ticker': staticmethod(lambda symbol: FakeTicker()),
+    })
+    monkeypatch.setitem(sys.modules, 'yfinance', fake_yfinance)
+
+    from stockapp.app.yahoo import fetch_stock_info
+
+    with pytest.raises(RateLimitError, match='レート制限'):
+        fetch_stock_info('AAPL')
 
 
 def test_save_ohlcv_rows_rejects_price_outside_decimal_field_range(db):

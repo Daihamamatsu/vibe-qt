@@ -13,6 +13,7 @@ from stockapp.app.us_tickers import (
     load_us_ticker_list,
     save_listing_csv,
 )
+from stockapp.app.yahoo import RateLimitError
 
 
 CSV = """symbol,name,exchange,assetType,ipoDate,delistingDate,status
@@ -84,6 +85,23 @@ def test_fetch_all_us_saves_csv_name_and_info():
     assert StockRecord.objects.filter(symbol='AAPL').count() == 1
     assert StockMeta.objects.get(symbol='AAPL').name == 'Apple Inc'
     assert StockMeta.objects.get(symbol='AAPL').info['shortName'] == 'Apple'
+
+
+@pytest.mark.django_db
+def test_fetch_all_us_stops_immediately_on_rate_limit(monkeypatch):
+    """米国銘柄の一括取得は429発生後に保存や進捗通知を続行しないこと。"""
+    progress = mock.Mock()
+    monkeypatch.setattr(
+        'stockapp.app.us_tickers.fetch_ohlcv_batch',
+        mock.Mock(side_effect=RateLimitError('429 Too Many Requests')),
+    )
+
+    with pytest.raises(RateLimitError, match='429'):
+        fetch_all_us(csv_text=CSV, sleep=0, progress_cb=progress)
+
+    assert StockRecord.objects.count() == 0
+    assert StockMeta.objects.count() == 0
+    progress.assert_not_called()
 
 
 @pytest.mark.django_db
