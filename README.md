@@ -158,6 +158,148 @@ python manage.py fetch_tickers_j --period 1y
 - データのない銘柄（ETF・ETN に多い）と取得失敗はサマリに集計して処理を継続する。再実行は upsert のため安全（中断後の再開・差分更新に使える）
 - バッチ単位の処理により株価取得の通信回数を減らしているが、`Ticker.info` は成功銘柄ごとに取得する。全銘柄（4,441 件）はネットワーク状況により時間がかかるため、バックグラウンドでの実行を推奨（例: `docker compose exec -d backend python manage.py fetch_tickers_j`）
 
+### 米国銘柄の一括取得（`fetch_tickers_us` / Issue #102）
+
+`fetch_tickers_us` は、Alpha Vantage の `LISTING_STATUS` CSV に含まれる米国銘柄の `symbol` と `name` を使って、Yahoo Finance から日足株価と `Ticker.info` を取得する Django 管理コマンドです。
+
+取得した情報は次のように保存します。
+
+- 日足 OHLCV: `StockRecord`
+- 銘柄名、セクター、`Ticker.info` 全体: `StockMeta`
+- お気に入り登録済みの場合の銘柄名・セクター: `FavoriteStock` へ同期
+
+#### 保存先と API 通信の動作
+
+銘柄一覧 CSV の既定保存先は次のファイルです。
+
+```text
+G:\git_work\stock-app\backend\data\listing_status_us.csv
+```
+
+コマンドの動作は次のとおりです。
+
+1. CSV が存在しない場合、Alpha Vantage の `LISTING_STATUS` を取得して上記パスへ保存する
+2. CSV が存在する場合、Alpha Vantage へ接続せず、保存済み CSV を使用する
+3. `--refresh` を指定した場合、既存 CSV を Alpha Vantage の最新応答で上書きする
+4. CSV から対象銘柄を絞り込み、Yahoo Finance の株価と `Ticker.info` を取得する
+
+保存済み CSV を使う場合は Alpha Vantage API キーは不要です。CSV を初めて取得するとき、または `--refresh` を使うときだけ API キーが必要になります。`--api-key` を省略した場合は、`ALPHA_VANTAGE_API_KEY` 環境変数、環境変数が未設定の場合は提示コードと同じ `demo` キーを使用します。
+
+#### 最初に少数銘柄で確認する
+
+バックエンドのディレクトリへ移動し、5 銘柄・直近 5 日・待機なしで実行します。
+
+```powershell
+cd G:\git_work\stock-app\backend
+python manage.py fetch_tickers_us --limit 5 --period 5d --sleep 0
+```
+
+初回で CSV が存在しなければ、`listing_status_us.csv` が作成されます。2 回目以降は、その CSV を再利用します。
+
+#### API キーを指定して一覧を再取得する
+
+環境変数を使う場合:
+
+```powershell
+cd G:\git_work\stock-app\backend
+$env:ALPHA_VANTAGE_API_KEY = "your-key"
+python manage.py fetch_tickers_us --refresh --limit 5 --period 5d --sleep 0
+```
+
+コマンド引数で指定する場合:
+
+```powershell
+python manage.py fetch_tickers_us `
+  --api-key "your-key" `
+  --refresh `
+  --limit 5 `
+  --period 5d `
+  --sleep 0
+```
+
+`demo` キーで取得できる場合は API キーの設定は不要ですが、一覧を安定して更新する場合は自分の Alpha Vantage API キーを使用してください。
+
+#### 保存済み CSV を別の場所から使用する
+
+`--csv` で CSV の保存・読み込み先を変更できます。指定したファイルが存在すれば、そのファイルを使用し、Alpha Vantage へ接続しません。
+
+```powershell
+python manage.py fetch_tickers_us `
+  --csv "G:\data\listing_status.csv" `
+  --limit 10 `
+  --period 1mo
+```
+
+指定した CSV を再取得して上書きする場合は `--refresh` を追加します。
+
+#### ETF も対象にする
+
+既定では `assetType=Stock` の銘柄だけを処理します。ETF も含める場合は、対象種別をカンマ区切りで指定します。
+
+```powershell
+python manage.py fetch_tickers_us `
+  --asset-type Stock,ETF `
+  --limit 20 `
+  --period 5d
+```
+
+#### 日々の株価だけを更新する
+
+`--skip-info` を指定すると、`Ticker.info`、`StockMeta`、お気に入り銘柄のメタ情報を更新せず、株価だけを更新します。保存済み CSV はそのまま使用します。
+
+```powershell
+python manage.py fetch_tickers_us --period 5d --skip-info
+```
+
+#### 全銘柄を処理する
+
+`--limit` を指定しないと、CSV の対象銘柄をすべて処理します。最初から全銘柄を実行せず、まず `--limit 5` や `--limit 20` で接続・保存を確認してください。
+
+```powershell
+python manage.py fetch_tickers_us --period 1y
+```
+
+`Ticker.info` は銘柄ごとに取得するため、全銘柄の処理には時間がかかります。Yahoo Finance の取得制限を考慮し、必要に応じて `--sleep` を増やしてください。
+
+#### オプション一覧
+
+| オプション | 既定値 | 説明 |
+|---|---|---|
+| `--api-key` | 環境変数、未設定時 `demo` | Alpha Vantage API キー |
+| `--csv` | `backend/data/listing_status_us.csv` | 銘柄一覧 CSV の保存・読み込み先 |
+| `--refresh` | 無効 | Alpha Vantage から CSV を再取得して上書き |
+| `--period` | `1y` | 株価取得期間（`5d` / `1mo` / `3mo` / `6mo` / `1y` / `2y` / `5y`） |
+| `--limit` | なし | 先頭 N 件だけ処理 |
+| `--asset-type` | `Stock` | 対象 `assetType`。例: `Stock,ETF` |
+| `--status` | `Active` | CSV の `status` による絞り込み |
+| `--sleep` | `0.5` | バッチ間の待機秒数 |
+| `--batch-size` | `100` | Yahoo Finance の一括取得件数 |
+| `--skip-info` | 無効 | `Ticker.info` と `StockMeta` の更新を省略し、株価だけ更新 |
+
+#### 実行結果の見方
+
+処理中は一定件数ごとに進捗が表示され、最後に次の集計が表示されます。
+
+```text
+完了: total=5 ok=4 no_data=1 failed=0 created=20 updated=0
+```
+
+- `total`: 対象銘柄数
+- `ok`: 株価を保存できた銘柄数
+- `no_data`: Yahoo Finance に株価データがなかった銘柄数
+- `failed`: 通信・変換・保存に失敗した銘柄数
+- `created`: 新規作成した日足レコード数
+- `updated`: 更新した日足レコード数
+
+`no_data` や `failed` が発生しても、コマンドは可能な限り後続銘柄の処理を続けます。失敗した銘柄は完了後に最大 20 件まで表示されます。
+
+#### よくあるエラー
+
+- **CSV の形式が不正**: `symbol,name,exchange,assetType,ipoDate,delistingDate,status` のヘッダーを持つ Alpha Vantage の CSV を指定してください。
+- **Alpha Vantage へ接続できない**: 保存済み CSV があれば `--refresh` を外して実行してください。
+- **銘柄一覧はあるが株価が保存されない**: `--limit 5 --period 5d` で少数銘柄を試し、`failed` と `no_data` の内容を確認してください。
+- **処理に時間がかかる**: `--limit` で対象を分割するか、`--skip-info` で `Ticker.info` 取得を省略してください。
+
 ## API リファレンス
 
 | メソッド | パス | 説明 |

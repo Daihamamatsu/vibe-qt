@@ -103,6 +103,19 @@
 - PR 作成前に `origin/main` との差分、変更ファイル、コミット履歴を確認する。
 - 既存 PR が Merged 済みの場合は、最新の `origin/main` を起点に次の変更を開始する。
 
+### PR マージ後のブランチ整理
+
+- PR が GitHub 上で Merged になったことを確認してから、対応ブランチの整理を行う。
+- マージ後は、次の手順でローカルの `main` をリモートの最新状態にする。
+  1. `git fetch origin`
+  2. 未コミット変更がないことを確認して `git switch main`（または既存のプロジェクト規約に従う切り替え方法）を実行する。
+  3. `git pull --ff-only origin main` を実行する。fast-forward できない場合は、merge / rebase や強制操作を行わず原因を確認する。
+- マージ済みであること、かつ未マージの作業が残っていないことを確認した対応ブランチだけを削除する。
+  - ローカルブランチは `git branch -d <branch-name>` で削除する。
+  - リモートブランチが自動削除されていない場合は、`git push origin --delete <branch-name>` で削除する。force push や強制削除は行わない。
+- 最後に `git fetch --prune origin`、`git --no-pager status --short --branch`、`git --no-pager branch -a --no-color` で不要なリモート参照と作業状態を確認する。
+- 未コミット変更、未マージの PR、別作業中のブランチ、原因不明の差分がある場合は、対象を削除・リセット・上書きせず、原因を確認してから整理する。
+
 ## コミットメッセージ
 
 - Conventional Commits の type と日本語の説明を使用する。
