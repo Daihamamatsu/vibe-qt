@@ -3,6 +3,7 @@
 注意: yfinance は重い依存（pandas 等）を含むため、未導入環境（テスト環境など）で
 アプリ起動時に ImportError とならないよう、関数内で遅延 import する。
 """
+import logging
 import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -20,6 +21,70 @@ MAX_STOCK_PRICE = Decimal('99999999.9999')
 
 class StockFetchError(Exception):
     """Yahoo Finance からデータを取得できなかった（通信エラー等）ときに送出される。"""
+
+
+class RateLimitError(StockFetchError):
+    """Yahoo Finance のレート制限（429）を検出したときに送出される。"""
+
+
+class _YFinanceRateLimitHandler(logging.Handler):
+    """yfinanceが例外を握りつぶして出力する429ログを検出する。"""
+
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+        self.message = None
+
+    def emit(self, record):
+        message = record.getMessage()
+        normalized = message.lower()
+        if (
+            'http 429' in normalized
+            or 'too many requests' in normalized
+            or 'rate-limited' in normalized
+            or 'rate limited' in normalized
+        ):
+            self.message = message
+
+
+def _with_rate_limit_monitor(logger, callback):
+    """yfinanceの取得中だけ429ログを監視し、検出後に専用例外を送出する。"""
+    handler = _YFinanceRateLimitHandler()
+    logger.addHandler(handler)
+    try:
+        result = callback()
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+    if handler.message is not None:
+        raise RateLimitError(f'Yahoo Finance のレート制限を検出しました: {handler.message}')
+    return result
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """例外チェーンまたはHTTP応答から429を判定する。"""
+    current = exc
+    checked = set()
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        if current.__class__.__name__ in {'YFRateLimitError', 'RateLimitError'}:
+            return True
+        response = getattr(current, 'response', None)
+        status = getattr(response, 'status_code', None)
+        if status is None:
+            status = getattr(response, 'status', None)
+        if status == 429 or getattr(current, 'status_code', None) == 429:
+            return True
+        message = str(current).lower()
+        if '429' in message or 'too many requests' in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _raise_fetch_error(message: str, exc: Exception) -> None:
+    """429なら専用例外、それ以外は通常の取得エラーへ変換する。"""
+    error_type = RateLimitError if _is_rate_limit_error(exc) else StockFetchError
+    raise error_type(f'{message}: {exc}') from exc
 
 
 def _to_decimal(value) -> Decimal:
@@ -63,11 +128,17 @@ def fetch_ohlcv(symbol: str, period: str = '1mo') -> list:
     """
     try:
         import yfinance as yf  # 遅延 import（モジュール docstring 参照）
-        df = yf.Ticker(symbol).history(period=period, interval='1d', auto_adjust=False)
+        logger = logging.getLogger('yfinance')
+        df = _with_rate_limit_monitor(
+            logger,
+            lambda: yf.Ticker(symbol).history(
+                period=period, interval='1d', auto_adjust=False,
+            ),
+        )
     except Exception as exc:
         # yfinance 未導入（ModuleNotFoundError）も「Yahoo Finance への取得失敗」と扱う。
         # try 外で import すると未導入環境で 500 になっていた (Issue #50 運用確認)
-        raise StockFetchError(f'Yahoo Finance の取得に失敗しました: {exc}') from exc
+        _raise_fetch_error('Yahoo Finance の取得に失敗しました', exc)
 
     if df is None or df.empty:
         raise LookupError(f'該当社種 {symbol} の株価データがありませんでした')
@@ -108,17 +179,21 @@ def fetch_ohlcv_batch(symbols: list[str], period: str = '1mo') -> tuple[dict, di
 
     try:
         import yfinance as yf  # 遅延 import
-        df = yf.download(
-            symbols,
-            period=period,
-            interval='1d',
-            auto_adjust=False,
-            group_by='ticker',
-            threads=True,
-            progress=False,
+        logger = logging.getLogger('yfinance')
+        df = _with_rate_limit_monitor(
+            logger,
+            lambda: yf.download(
+                symbols,
+                period=period,
+                interval='1d',
+                auto_adjust=False,
+                group_by='ticker',
+                threads=False,
+                progress=False,
+            ),
         )
     except Exception as exc:
-        raise StockFetchError(f'Yahoo Finance の一括取得に失敗しました: {exc}') from exc
+        _raise_fetch_error('Yahoo Finance の一括取得に失敗しました', exc)
 
     if df is None or df.empty:
         return {}, {}
@@ -221,7 +296,9 @@ def fetch_stock_info(symbol: str) -> dict:
     try:
         import yfinance as yf  # 遅延 import
         info = yf.Ticker(symbol).info
-    except Exception:
+    except Exception as exc:
+        if _is_rate_limit_error(exc):
+            raise RateLimitError(f'Yahoo Finance の銘柄情報取得がレート制限されました: {exc}') from exc
         return {}
     if not isinstance(info, dict):
         return {}

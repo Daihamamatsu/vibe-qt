@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .yahoo import (
+    RateLimitError,
     StockFetchError,
     fetch_ohlcv_batch,
     fetch_stock_info,
@@ -112,6 +113,8 @@ def fetch_all_us(api_key: str | None = None, csv_text: str | None = None,
         symbols = [ticker['symbol'] for ticker in batch]
         try:
             rows_by_symbol, errors_by_symbol = fetch_ohlcv_batch(symbols, period)
+        except RateLimitError:
+            raise
         except StockFetchError as exc:
             rows_by_symbol = {}
             errors_by_symbol = {symbol: exc for symbol in symbols}
@@ -134,6 +137,8 @@ def fetch_all_us(api_key: str | None = None, csv_text: str | None = None,
                             name=ticker['name'],
                             info=fetch_stock_info(symbol),
                         )
+                except RateLimitError:
+                    raise
                 except Exception as exc:
                     summary['failed'] += 1
                     summary['errors'].append({'symbol': symbol, 'reason': str(exc)})

@@ -155,6 +155,7 @@ python manage.py fetch_tickers_j --period 1y
 - 株価履歴は `yf.download()` で100銘柄ずつまとめて取得する。東証コードは Yahoo Finance のシンボルへ変換して取得（`1301` → `1301.T`）。`Ticker.info` 全体は銘柄ごとに取得して `StockMeta.info` に保存し、銘柄名・セクターもキャッシュする。銘柄名は CSV 側を最優先し、CSV名が空の場合は `Ticker.info` の日本語名・英語名へフォールバックする
 - 直近の株価だけを更新する場合は `python manage.py fetch_tickers_j --period 5d --skip-info` を使用する。この場合、`StockRecord` のみ更新し、`StockMeta` とお気に入り銘柄のメタ情報は更新しない
 - `fetch_tickers_j` は株価データの取得・保存だけを行い、古典タートルズの演算は行わない。既存の株価データから演算する場合は `python manage.py rebuild_classic_turtle_signals` を別途実行する
+- yfinance が `429 Too Many Requests`（レート制限）を返した場合、株価・銘柄情報の一括取得はその時点で例外を返して停止する。後続の銘柄取得、保存、進捗通知、待機処理は行わない。429以外の取得失敗は従来どおり銘柄単位で集計して処理を継続する
 - データのない銘柄（ETF・ETN に多い）と取得失敗はサマリに集計して処理を継続する。再実行は upsert のため安全（中断後の再開・差分更新に使える）
 - バッチ単位の処理により株価取得の通信回数を減らしているが、`Ticker.info` は成功銘柄ごとに取得する。全銘柄（4,441 件）はネットワーク状況により時間がかかるため、バックグラウンドでの実行を推奨（例: `docker compose exec -d backend python manage.py fetch_tickers_j`）
 

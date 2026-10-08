@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from .yahoo import (
+    RateLimitError,
     StockFetchError,
     fetch_ohlcv_batch,
     fetch_stock_info,
@@ -101,6 +102,8 @@ def fetch_all(csv_path=None, period: str = '1y', limit: int = None,
         symbols = [tse_to_yahoo_symbol(ticker['code']) for ticker in batch]
         try:
             rows_by_symbol, errors_by_symbol = fetch_ohlcv_batch(symbols, period)
+        except RateLimitError:
+            raise
         except StockFetchError as exc:
             rows_by_symbol = {}
             errors_by_symbol = {symbol: exc for symbol in symbols}
@@ -121,6 +124,8 @@ def fetch_all(csv_path=None, period: str = '1y', limit: int = None,
             else:
                 try:
                     created, updated = save_ohlcv_rows(symbol, rows)
+                except RateLimitError:
+                    raise
                 except StockFetchError as exc:
                     summary['failed'] += 1
                     summary['errors'].append(

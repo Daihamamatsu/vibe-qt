@@ -17,7 +17,7 @@ from django.core.management.base import CommandError
 
 from stockapp.app.models import ClassicTurtleSignal, StockMeta, StockRecord
 from stockapp.app.tickers import fetch_all, load_ticker_list, tse_to_yahoo_symbol
-from stockapp.app.yahoo import save_ohlcv_rows
+from stockapp.app.yahoo import RateLimitError, save_ohlcv_rows
 
 # backend/data/data_j.csv と同じレイアウト（先頭 4 列のみ機能に必要）
 CSV_HEADER = (
@@ -201,6 +201,28 @@ def test_fetch_all_saves_records_and_meta(db, fake_bulk_yfinance, tmp_path):
     # 銘柄名は CSV 由来（Yahoo の .info は参照しない）
     assert StockMeta.objects.get(symbol='1301.T').name == '極洋'
     assert StockMeta.objects.get(symbol='130A.T').name == 'レイアウトテスト'
+
+
+def test_fetch_all_stops_immediately_on_rate_limit(db, tmp_path, monkeypatch):
+    """日本銘柄の一括取得は429発生後に保存や進捗通知を続行しないこと。"""
+    from stockapp.app.tickers import fetch_all
+
+    csv_path = _write_ticker_csv(tmp_path / 'tickers.csv', [
+        ('1301', '極洋', 'プライム（内国株式）'),
+        ('130A', 'レイアウトテスト', 'プライム（内国株式）'),
+    ])
+    progress = mock.Mock()
+    monkeypatch.setattr(
+        'stockapp.app.tickers.fetch_ohlcv_batch',
+        mock.Mock(side_effect=RateLimitError('429 Too Many Requests')),
+    )
+
+    with pytest.raises(RateLimitError, match='429'):
+        fetch_all(csv_path=csv_path, sleep=0, progress_cb=progress)
+
+    assert StockRecord.objects.count() == 0
+    assert StockMeta.objects.count() == 0
+    progress.assert_not_called()
 
 
 def test_fetch_all_prefers_csv_name_over_yahoo_name(db, fake_bulk_yfinance, tmp_path, monkeypatch):
