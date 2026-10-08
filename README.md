@@ -146,7 +146,7 @@ python manage.py fetch_tickers_j --period 1y
 | オプション | 既定 | 説明 |
 |---|---|---|
 | `--csv` | `backend/data/data_j.csv` | 銘柄リスト CSV のパス |
-| `--period` | `1y` | 取得期間（5d / 1mo / 3mo / 6mo / 1y / 2y / 5y） |
+| `--period` | `1y` | 取得期間（1d / 5d / 1mo / 3mo / 6mo / 1y / 2y / 5y） |
 | `--limit` | （なし） | 先頭 N 件の銘柄のみ処理（動作確認用: `--limit 5`） |
 | `--sleep` | `0.5` | バッチ間の待機秒数（Yahoo Finance のレート制限対策） |
 | `--batch-size` | `100` | `yf.download()` で一度に取得する銘柄数 |
@@ -269,7 +269,7 @@ python manage.py fetch_tickers_us --period 1y
 | `--api-key` | 環境変数、未設定時 `demo` | Alpha Vantage API キー |
 | `--csv` | `backend/data/listing_status_us.csv` | 銘柄一覧 CSV の保存・読み込み先 |
 | `--refresh` | 無効 | Alpha Vantage から CSV を再取得して上書き |
-| `--period` | `1y` | 株価取得期間（`5d` / `1mo` / `3mo` / `6mo` / `1y` / `2y` / `5y`） |
+| `--period` | `1y` | 株価取得期間（`1d` / `5d` / `1mo` / `3mo` / `6mo` / `1y` / `2y` / `5y`） |
 | `--limit` | なし | 先頭 N 件だけ処理 |
 | `--asset-type` | `Stock` | 対象 `assetType`。例: `Stock,ETF` |
 | `--status` | `Active` | CSV の `status` による絞り込み |

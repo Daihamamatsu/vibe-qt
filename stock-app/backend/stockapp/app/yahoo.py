@@ -9,7 +9,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 # 取得エンドポイントで指定可能な期間（yfinance の period 値）
-VALID_PERIODS = {'5d', '1mo', '3mo', '6mo', '1y', '2y', '5y'}
+VALID_PERIODS = {'1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y'}
 
 # 記号の許容文字（英大文字・数字・ドット・ハイフン・ハット・イコール、最大 10 文字 = モデルの max_length）
 SYMBOL_RE = re.compile(r'^[A-Z0-9.\-^=]{1,10}$')
