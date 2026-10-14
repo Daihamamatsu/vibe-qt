@@ -76,24 +76,23 @@ curl http://localhost:8000/api/stocks/
 curl http://localhost/api/stocks/   # frontend (nginx) 経由
 ```
 
-### 方法 2: ローカル開発（ホットリロード付き）
+### Docker コンテナ内での管理コマンド実行
 
-バックエンド（ターミナル 1）:
+Django、yfinance などのバックエンド依存関係は Docker イメージ内にインストールします。
+ホスト側で `pip install` や `python manage.py` を実行せず、`stock-app` ディレクトリから
+`docker compose exec backend ...` を使用してください。
 
 ```bash
-cd stock-app/backend
-pip install -r requirements.txt
-python manage.py migrate
-python manage.py runserver 8000
+cd stock-app
+docker compose up -d --build
+docker compose exec backend python manage.py migrate
 ```
 
-フロントエンド（ターミナル 2）:
+フロントエンドを変更した場合は、Docker イメージを再ビルドして反映します。
 
 ```bash
-cd stock-app/frontend
-npm install
-npm run dev
-# http://localhost:5173 で起動。/api は自動的に http://localhost:8000 へプロキシ
+cd stock-app
+docker compose up -d --build
 ```
 
 ### 全銘柄株価の一括取得（管理コマンド / Issue #65）
@@ -101,12 +100,8 @@ npm run dev
 東証上場銘柄リスト CSV（`backend/data/data_j.csv`、2026 年 8 月末時点 4,441 銘柄）を同梱しており、管理コマンドで全銘柄の日足株価を一括取得・登録できる:
 
 ```bash
-# Docker Compose 実行中
+cd stock-app
 docker compose exec backend python manage.py fetch_tickers_j
-
-# ローカル実行中（方法 2）
-cd stock-app/backend
-python manage.py fetch_tickers_j
 ```
 
 #### 使用例
@@ -116,18 +111,14 @@ python manage.py fetch_tickers_j
 初回は、少数の銘柄で通信・DB 保存を確認します。
 
 ```bash
-cd stock-app/backend
-python manage.py fetch_tickers_j --limit 5 --period 5d --sleep 0
+cd stock-app
+docker compose exec backend python manage.py fetch_tickers_j --limit 5 --period 5d --sleep 0
 ```
 
 日々の更新など、直近の株価だけを更新する場合は `--skip-info` を指定します。銘柄ごとの `Ticker.info` 取得、`StockMeta` 更新、お気に入り銘柄のメタ情報同期を省略し、`StockRecord` のみ更新します。
 
 ```bash
-# ローカル実行
-cd stock-app/backend
-python manage.py fetch_tickers_j --period 5d --skip-info
-
-# Docker Compose 実行
+cd stock-app
 docker compose exec backend python manage.py fetch_tickers_j --period 5d --skip-info
 ```
 
@@ -140,7 +131,8 @@ docker compose exec -d backend python manage.py fetch_tickers_j --period 5d --sk
 メタ情報も更新したい場合は、`--skip-info` を付けずに実行します。初回登録や銘柄名・セクター情報の更新に使用します。
 
 ```bash
-python manage.py fetch_tickers_j --period 1y
+cd stock-app
+docker compose exec backend python manage.py fetch_tickers_j --period 1y
 ```
 
 | オプション | 既定 | 説明 |
@@ -153,8 +145,8 @@ python manage.py fetch_tickers_j --period 1y
 | `--skip-info` | 無効 | `Ticker.info` の取得と `StockMeta` 更新を省略し、株価だけ更新 |
 
 - 株価履歴は `yf.download()` で100銘柄ずつまとめて取得する。東証コードは Yahoo Finance のシンボルへ変換して取得（`1301` → `1301.T`）。`Ticker.info` 全体は銘柄ごとに取得して `StockMeta.info` に保存し、銘柄名・セクターもキャッシュする。銘柄名は CSV 側を最優先し、CSV名が空の場合は `Ticker.info` の日本語名・英語名へフォールバックする
-- 直近の株価だけを更新する場合は `python manage.py fetch_tickers_j --period 5d --skip-info` を使用する。この場合、`StockRecord` のみ更新し、`StockMeta` とお気に入り銘柄のメタ情報は更新しない
-- `fetch_tickers_j` は株価データの取得・保存だけを行い、古典タートルズの演算は行わない。既存の株価データから演算する場合は `python manage.py rebuild_classic_turtle_signals` を別途実行する
+- 直近の株価だけを更新する場合は `docker compose exec backend python manage.py fetch_tickers_j --period 5d --skip-info` を使用する。この場合、`StockRecord` のみ更新し、`StockMeta` とお気に入り銘柄のメタ情報は更新しない
+- `fetch_tickers_j` は株価データの取得・保存だけを行い、古典タートルズの演算は行わない。既存の株価データから演算する場合は `docker compose exec backend python manage.py rebuild_classic_turtle_signals` を別途実行する
 - yfinance が `429 Too Many Requests`（レート制限）を返した場合、株価・銘柄情報の一括取得はその時点で例外を返して停止する。後続の銘柄取得、保存、進捗通知、待機処理は行わない。429以外の取得失敗は従来どおり銘柄単位で集計して処理を継続する
 - データのない銘柄（ETF・ETN に多い）と取得失敗はサマリに集計して処理を継続する。再実行は upsert のため安全（中断後の再開・差分更新に使える）
 - バッチ単位の処理により株価取得の通信回数を減らしているが、`Ticker.info` は成功銘柄ごとに取得する。全銘柄（4,441 件）はネットワーク状況により時間がかかるため、バックグラウンドでの実行を推奨（例: `docker compose exec -d backend python manage.py fetch_tickers_j`）
@@ -188,11 +180,11 @@ G:\git_work\stock-app\backend\data\listing_status_us.csv
 
 #### 最初に少数銘柄で確認する
 
-バックエンドのディレクトリへ移動し、5 銘柄・直近 5 日・待機なしで実行します。
+`stock-app` ディレクトリから、5 銘柄・直近 5 日・待機なしで実行します。
 
 ```powershell
-cd G:\git_work\stock-app\backend
-python manage.py fetch_tickers_us --limit 5 --period 5d --sleep 0
+cd G:\git_work\stock-app
+docker compose exec backend python manage.py fetch_tickers_us --limit 5 --period 5d --sleep 0
 ```
 
 初回で CSV が存在しなければ、`listing_status_us.csv` が作成されます。2 回目以降は、その CSV を再利用します。
@@ -202,15 +194,16 @@ python manage.py fetch_tickers_us --limit 5 --period 5d --sleep 0
 環境変数を使う場合:
 
 ```powershell
-cd G:\git_work\stock-app\backend
+cd G:\git_work\stock-app
 $env:ALPHA_VANTAGE_API_KEY = "your-key"
-python manage.py fetch_tickers_us --refresh --limit 5 --period 5d --sleep 0
+docker compose exec -e ALPHA_VANTAGE_API_KEY=$env:ALPHA_VANTAGE_API_KEY backend python manage.py fetch_tickers_us --refresh --limit 5 --period 5d --sleep 0
 ```
 
 コマンド引数で指定する場合:
 
 ```powershell
-python manage.py fetch_tickers_us `
+cd G:\git_work\stock-app
+docker compose exec backend python manage.py fetch_tickers_us `
   --api-key "your-key" `
   --refresh `
   --limit 5 `
@@ -225,8 +218,9 @@ python manage.py fetch_tickers_us `
 `--csv` で CSV の保存・読み込み先を変更できます。指定したファイルが存在すれば、そのファイルを使用し、Alpha Vantage へ接続しません。
 
 ```powershell
-python manage.py fetch_tickers_us `
-  --csv "G:\data\listing_status.csv" `
+cd G:\git_work\stock-app
+docker compose exec backend python manage.py fetch_tickers_us `
+  --csv "/app/data/listing_status.csv" `
   --limit 10 `
   --period 1mo
 ```
@@ -238,7 +232,8 @@ python manage.py fetch_tickers_us `
 既定では `assetType=Stock` の銘柄だけを処理します。ETF も含める場合は、対象種別をカンマ区切りで指定します。
 
 ```powershell
-python manage.py fetch_tickers_us `
+cd G:\git_work\stock-app
+docker compose exec backend python manage.py fetch_tickers_us `
   --asset-type Stock,ETF `
   --limit 20 `
   --period 5d
@@ -249,7 +244,8 @@ python manage.py fetch_tickers_us `
 `--skip-info` を指定すると、`Ticker.info`、`StockMeta`、お気に入り銘柄のメタ情報を更新せず、株価だけを更新します。保存済み CSV はそのまま使用します。
 
 ```powershell
-python manage.py fetch_tickers_us --period 5d --skip-info
+cd G:\git_work\stock-app
+docker compose exec backend python manage.py fetch_tickers_us --period 5d --skip-info
 ```
 
 #### 全銘柄を処理する
@@ -257,7 +253,8 @@ python manage.py fetch_tickers_us --period 5d --skip-info
 `--limit` を指定しないと、CSV の対象銘柄をすべて処理します。最初から全銘柄を実行せず、まず `--limit 5` や `--limit 20` で接続・保存を確認してください。
 
 ```powershell
-python manage.py fetch_tickers_us --period 1y
+cd G:\git_work\stock-app
+docker compose exec backend python manage.py fetch_tickers_us --period 1y
 ```
 
 `Ticker.info` は銘柄ごとに取得するため、全銘柄の処理には時間がかかります。Yahoo Finance の取得制限を考慮し、必要に応じて `--sleep` を増やしてください。
@@ -334,13 +331,14 @@ GET /api/classic-turtle/signals/?start_date=2026-01-01&end_date=2026-01-31&syste
 
 ```bash
 # DB内に存在する全銘柄を再計算
-python manage.py rebuild_classic_turtle_signals
+cd stock-app
+docker compose exec backend python manage.py rebuild_classic_turtle_signals
 
 # 特定銘柄だけ再計算
-python manage.py rebuild_classic_turtle_signals --symbol 1301.T
+docker compose exec backend python manage.py rebuild_classic_turtle_signals --symbol 1301.T
 
 # 動作確認用に先頭5銘柄だけ再計算
-python manage.py rebuild_classic_turtle_signals --limit 5
+docker compose exec backend python manage.py rebuild_classic_turtle_signals --limit 5
 ```
 
 判定に必要な過去データが不足する銘柄はシグナルを保存しません。株価取得後に必要なタイミングでこのコマンドを実行してください。
@@ -349,10 +347,14 @@ python manage.py rebuild_classic_turtle_signals --limit 5
 
 ### API テスト（pytest / Django/DRF）
 
+テストは GitHub Actions の CI で、リポジトリルートから次の手順で実行します。
+
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ```
+
+このテスト手順は CI 用であり、Django 管理コマンドの通常運用は `backend` コンテナ内で実行します。
 
 ### Postman
 
@@ -532,5 +534,5 @@ docker compose -f stock-app/docker-compose.yml exec db sqlite3 /data/db/stock.db
 - **テスト**:
   - バックエンド `tests/test_yahoo.py`: `save_ohlcv_rows` が既存の同日（イントレーダ）行を引け後最終値で上書きすること（実害の値 8306.T / 2026-09-15 で close 3689 → 3668、volume 21,892,300 → 41,635,100 を検証）、`fetch_and_save` が同日を update かつ翌日以降のみ create すること（オフラインの monkeypatch 使用）を追加
   - フロントエンド `src/utils/freshness.test.ts`（Vitest）: 自動リフレッシュ判定の日付境界（当日 / 前日 / 週末ギャップ / 7 日前境界 / 8 日前超 / 無データ / recentDays 指定）を検証
-- **運用メモ**: 一括登録した全銘柄の同日行をまとめて引け後値へ更新する場合は、引け後に `python manage.py fetch_tickers_j --period 5d` を再実行する（upsert 意味論で再実行安全）
+  - **運用メモ**: 一括登録した全銘柄の同日行をまとめて引け後値へ更新する場合は、引け後に `docker compose exec backend python manage.py fetch_tickers_j --period 5d` を再実行する（upsert 意味論で再実行安全）
 
